@@ -44,28 +44,24 @@ except Exception as e:
     license_collection = None
 
 # ==============================================================================
-# --- FINAL & MOST PRECISE PARSING FUNCTIONS ---
+# --- FINAL & HIGH-PRECISION PARSING LOGIC ---
 # ==============================================================================
 
 def find_key_phrase(phrase, all_words):
     """Finds a sequence of word objects matching a phrase, ignoring punctuation."""
     phrase_words = [re.sub(r'[^\w]', '', word).lower() for word in phrase.split()]
-    num_phrase_words = len(phrase_words)
-    if num_phrase_words == 0: return None
-
-    for i in range(len(all_words) - num_phrase_words + 1):
-        sequence = all_words[i : i + num_phrase_words]
+    if not phrase_words: return None
+    for i in range(len(all_words) - len(phrase_words) + 1):
+        sequence = all_words[i : i + len(phrase_words)]
         sequence_text = [re.sub(r'[^\w]', '', word.value).lower() for word in sequence]
-        
         if sequence_text == phrase_words:
-            first_box = sequence[0].geometry
-            last_box = sequence[-1].geometry
-            if abs(first_box[0][1] - last_box[0][1]) < 0.02:
+            first_box, last_box = sequence[0].geometry, sequence[-1].geometry
+            if abs(first_box[0][1] - last_box[0][1]) < 0.02: # Check if on the same line
                 return sequence
     return None
 
 def get_phrase_bbox(phrase_words):
-    """Gets a single bounding box that covers a list of word objects."""
+    """Gets a single bounding box covering a list of word objects."""
     if not phrase_words: return None
     x_min = min(word.geometry[0][0] for word in phrase_words)
     y_min = min(word.geometry[0][1] for word in phrase_words)
@@ -73,49 +69,31 @@ def get_phrase_bbox(phrase_words):
     y_max = max(word.geometry[1][1] for word in phrase_words)
     return (x_min, y_min, x_max, y_max)
 
-def find_value_directly_below(key_bbox, all_words):
-    """Finds the text on the single line directly below a key's bounding box."""
-    if not key_bbox: return ""
-    # Define a narrow search area below the key
-    search_area = (key_bbox[0], key_bbox[3], key_bbox[2], key_bbox[3] + 0.05)
-    
+def get_text_in_area(bbox, all_words):
+    """Gets all text within a specified bounding box, sorted left-to-right."""
+    if not bbox: return ""
+    x_min, y_min, x_max, y_max = bbox
     value_words = [
         word for word in all_words
-        if (word.geometry[0][1] + word.geometry[1][1]) / 2 > search_area[1] and
-           (word.geometry[0][1] + word.geometry[1][1]) / 2 < search_area[3] and
-           (word.geometry[0][0] + word.geometry[1][0]) / 2 > search_area[0] and
-           (word.geometry[0][0] + word.geometry[1][0]) / 2 < search_area[2]
+        if (word.geometry[0][0] + word.geometry[1][0]) / 2 >= x_min and
+           (word.geometry[0][0] + word.geometry[1][0]) / 2 <= x_max and
+           (word.geometry[0][1] + word.geometry[1][1]) / 2 >= y_min and
+           (word.geometry[0][1] + word.geometry[1][1]) / 2 <= y_max
     ]
     value_words.sort(key=lambda x: x.geometry[0][0])
-    return " ".join([word.value for word in value_words])
-
-def find_value_directly_right(key_bbox, all_words, right_boundary_x=1.0):
-    """Finds text on the same line as a key, stopping at a boundary."""
-    if not key_bbox: return ""
-    key_vertical_center = (key_bbox[1] + key_bbox[3]) / 2
-    
-    value_words = [
-        word for word in all_words
-        if abs(((word.geometry[0][1] + word.geometry[1][1]) / 2) - key_vertical_center) < 0.02 and
-           word.geometry[0][0] > key_bbox[2] and
-           word.geometry[1][0] < right_boundary_x
-    ]
-    value_words.sort(key=lambda x: x.geometry[0][0])
-    return " ".join([word.value for word in value_words])
-
+    return " ".join([word.value for word in value_words]).strip(":,.")
 
 def process_license_with_doctr(image_path):
-    """Processes a license using DocTR with final, high-precision parsing logic."""
+    """Processes a license using a highly specific, layout-aware parsing strategy."""
     doc = DocumentFile.from_images(image_path)
     result = predictor(doc)
-    
     page_words = [word for page in result.pages for block in page.blocks for line in block.lines for word in line.words]
     
     extracted_data = {}
 
-    # --- Define Key Phrases exactly as they appear on the license ---
+    # Define all keys we expect to find on the license
     KEYS = {
-        "full_name": "Last Name, First Name, Middle Name",
+        "name_header": "Last Name, First Name, Middle Name",
         "license_number": "License No.",
         "expiration_date": "Expiration Date",
         "agency_code": "Agency Code",
@@ -126,40 +104,62 @@ def process_license_with_doctr(image_path):
         "height": "Height(m)",
         "address": "Address",
         "blood_type": "Blood Type",
-        "dl_codes": "DL Codes", # This is a separate key now
+        "dl_codes": "DL Codes",
         "eye_color": "Eyes Color",
         "conditions": "Conditions",
     }
     
-    # --- Find all keys first ---
-    found_keys = {name: find_key_phrase(text, page_words) for name, text in KEYS.items()}
-    found_bboxes = {name: get_phrase_bbox(phrase) for name, phrase in found_keys.items()}
+    # Pre-compute the locations of all keys to build a map of the document
+    key_bboxes = {name: get_phrase_bbox(find_key_phrase(text, page_words)) for name, text in KEYS.items()}
 
-    # --- Extract values using precise logic for each field type ---
-    
-    # Fields with value below
-    for name in ["full_name", "license_number", "expiration_date", "agency_code", "address"]:
-        extracted_data[name] = find_value_directly_below(found_bboxes.get(name), page_words)
-        
-    # Fields in a row
-    row_field_names = ["nationality", "sex", "date_of_birth", "weight", "height"]
-    for i, name in enumerate(row_field_names):
-        right_boundary = 1.0
-        # Find the start of the next field to set the boundary
-        if i + 1 < len(row_field_names):
-            next_key_bbox = found_bboxes.get(row_field_names[i+1])
-            if next_key_bbox:
-                right_boundary = next_key_bbox[0]
-        
-        extracted_data[name] = find_value_directly_right(found_bboxes.get(name), page_words, right_boundary_x=right_boundary)
+    # --- Extract values based on their precise, relative locations ---
 
-    # Special stacked fields
-    for name in ["blood_type", "dl_codes", "eye_color", "conditions"]:
-         extracted_data[name] = find_value_directly_right(found_bboxes.get(name), page_words)
+    # 1. Name: Below the "Last Name..." header, but above the "Nationality" key.
+    if key_bboxes["name_header"] and key_bboxes["nationality"]:
+        search_area = (key_bboxes["name_header"][0], key_bboxes["name_header"][3], key_bboxes["name_header"][2], key_bboxes["nationality"][1])
+        extracted_data["full_name"] = get_text_in_area(search_area, page_words)
+    else:
+        extracted_data["full_name"] = "NOT_FOUND"
 
-    # --- Final cleanup and return ---
-    for key, value in extracted_data.items():
-        extracted_data[key] = value.strip(" :.")
+    # 2. Row fields: Nationality, Sex, DOB, Weight, Height
+    row_keys = ["nationality", "sex", "date_of_birth", "weight", "height"]
+    for i, key_name in enumerate(row_keys):
+        if key_bboxes[key_name]:
+            right_boundary = 1.0
+            if i + 1 < len(row_keys) and key_bboxes[row_keys[i+1]]:
+                right_boundary = key_bboxes[row_keys[i+1]][0] # Start of next key
+            search_area = (key_bboxes[key_name][2], key_bboxes[key_name][1], right_boundary, key_bboxes[key_name][3])
+            extracted_data[key_name] = get_text_in_area(search_area, page_words)
+        else:
+            extracted_data[key_name] = ""
+            
+    # 3. Column fields: License No, Expiration Date, Address
+    for key_name in ["license_number", "expiration_date", "address", "agency_code"]:
+        if key_bboxes[key_name]:
+            # The value is in the vertical column defined by the key's width, on the line below.
+            search_area = (key_bboxes[key_name][0], key_bboxes[key_name][3], key_bboxes[key_name][2], key_bboxes[key_name][3] + 0.05)
+            extracted_data[key_name] = get_text_in_area(search_area, page_words)
+        else:
+            extracted_data[key_name] = ""
+
+    # 4. Stacked fields in the bottom-left corner
+    stacked_keys = ["blood_type", "dl_codes"]
+    for i, key_name in enumerate(stacked_keys):
+        if key_bboxes[key_name]:
+            right_boundary = key_bboxes["eye_color"][0] if key_bboxes["eye_color"] else 0.5 # Stop before "Eyes Color"
+            search_area = (key_bboxes[key_name][2], key_bboxes[key_name][1], right_boundary, key_bboxes[key_name][3])
+            extracted_data[key_name] = get_text_in_area(search_area, page_words)
+        else:
+            extracted_data[key_name] = ""
+            
+    # 5. Stacked fields in the bottom-right corner
+    stacked_keys_right = ["eye_color", "conditions"]
+    for i, key_name in enumerate(stacked_keys_right):
+        if key_bboxes[key_name]:
+            search_area = (key_bboxes[key_name][2], key_bboxes[key_name][1], 1.0, key_bboxes[key_name][3])
+            extracted_data[key_name] = get_text_in_area(search_area, page_words)
+        else:
+            extracted_data[key_name] = ""
 
     # Not implemented fields
     extracted_data["barcode_data"] = "NOT_IMPLEMENTED"
@@ -167,7 +167,6 @@ def process_license_with_doctr(image_path):
     extracted_data["signature_base64"] = "NOT_IMPLEMENTED"
 
     return extracted_data
-
 
 # ==============================================================================
 # --- Flask Routes (No changes needed) ---
