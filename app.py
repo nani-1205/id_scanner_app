@@ -133,33 +133,43 @@ def process_license_with_doctr(image_path):
         else:
             extracted_data[key_name] = ""
             
-    # 3. Column fields: License No, Expiration Date, Address
-    for key_name in ["license_number", "expiration_date", "address", "agency_code"]:
-        if key_bboxes[key_name]:
-            # The value is in the vertical column defined by the key's width, on the line below.
-            search_area = (key_bboxes[key_name][0], key_bboxes[key_name][3], key_bboxes[key_name][2], key_bboxes[key_name][3] + 0.05)
-            extracted_data[key_name] = get_text_in_area(search_area, page_words)
-        else:
-            extracted_data[key_name] = ""
-
-    # 4. Stacked fields in the bottom-left corner
-    stacked_keys = ["blood_type", "dl_codes"]
-    for i, key_name in enumerate(stacked_keys):
-        if key_bboxes[key_name]:
-            right_boundary = key_bboxes["eye_color"][0] if key_bboxes["eye_color"] else 0.5 # Stop before "Eyes Color"
-            search_area = (key_bboxes[key_name][2], key_bboxes[key_name][1], right_boundary, key_bboxes[key_name][3])
+    # 3. Column fields: License No, Expiration Date, Agency Code
+    for key_name in ["license_number", "expiration_date", "agency_code"]:
+        if key_bboxes[key_name] and key_bboxes["address"]:
+             # The value is in the vertical column defined by the key's width, bounded below by the address line
+            search_area = (key_bboxes[key_name][0], key_bboxes[key_name][3], key_bboxes[key_name][2], key_bboxes["address"][1])
             extracted_data[key_name] = get_text_in_area(search_area, page_words)
         else:
             extracted_data[key_name] = ""
             
-    # 5. Stacked fields in the bottom-right corner
-    stacked_keys_right = ["eye_color", "conditions"]
-    for i, key_name in enumerate(stacked_keys_right):
-        if key_bboxes[key_name]:
-            search_area = (key_bboxes[key_name][2], key_bboxes[key_name][1], 1.0, key_bboxes[key_name][3])
-            extracted_data[key_name] = get_text_in_area(search_area, page_words)
-        else:
-            extracted_data[key_name] = ""
+    # 4. Address: It's below the Address key and above the Blood Type key
+    if key_bboxes["address"] and key_bboxes["blood_type"]:
+        search_area = (key_bboxes["address"][0], key_bboxes["address"][3], 0.95, key_bboxes["blood_type"][1])
+        extracted_data["address"] = get_text_in_area(search_area, page_words)
+    else:
+        extracted_data["address"] = ""
+
+    # 5. Stacked fields: Blood Type/DL Codes and Eyes Color/Conditions
+    # We define the space between two keys as the value area.
+    if key_bboxes["blood_type"] and key_bboxes["dl_codes"]:
+        search_area = (key_bboxes["blood_type"][0], key_bboxes["blood_type"][3], key_bboxes["dl_codes"][2], key_bboxes["dl_codes"][1])
+        extracted_data["blood_type_value"] = get_text_in_area(search_area, page_words) # Using temp key
+        extracted_data["dl_codes_value"] = get_text_in_area((key_bboxes["dl_codes"][0], key_bboxes["dl_codes"][3], key_bboxes["dl_codes"][2], 1.0), page_words)
+    
+    if key_bboxes["eye_color"] and key_bboxes["conditions"]:
+        search_area = (key_bboxes["eye_color"][0], key_bboxes["eye_color"][3], key_bboxes["conditions"][2], key_bboxes["conditions"][1])
+        extracted_data["eye_color_value"] = get_text_in_area(search_area, page_words)
+        extracted_data["conditions_value"] = get_text_in_area((key_bboxes["conditions"][0], key_bboxes["conditions"][3], key_bboxes["conditions"][2], 1.0), page_words)
+    
+    # Re-map the stacked values to their final keys
+    extracted_data["blood_type"] = extracted_data.get("blood_type_value", "")
+    extracted_data["dl_codes"] = extracted_data.get("dl_codes_value", "")
+    extracted_data["eye_color"] = extracted_data.get("eye_color_value", "")
+    extracted_data["conditions"] = extracted_data.get("conditions_value", "")
+
+    # Clean up temporary keys
+    for k in ["blood_type_value", "dl_codes_value", "eye_color_value", "conditions_value"]:
+        extracted_data.pop(k, None)
 
     # Not implemented fields
     extracted_data["barcode_data"] = "NOT_IMPLEMENTED"
