@@ -26,11 +26,12 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 # This is done once when the application starts for performance.
 print("Loading DocTR OCR model... This may take a moment on first run.")
 # Set 'detect_orientation=True' to let DocTR handle rotation automatically
-predictor = ocr_predictor(pretrained=True, detect_orientation=True)
+# Set 'resolve_blocks=False' for faster processing if we only need words
+predictor = ocr_predictor(pretrained=True, detect_orientation=True, resolve_blocks=False)
 print("DocTR model loaded successfully.")
 
 # --- MONGODB CONNECTION ---
-# (This part remains the same)
+# This part remains the same. Ensure your .env file is correct.
 try:
     client = MongoClient(
         host=os.getenv('MONGO_IP'),
@@ -55,28 +56,37 @@ def allowed_file(filename):
 def find_value_after_key(key_text, all_words):
     """
     Finds the text value that appears after a given key.
-    This is a simple implementation assuming the value is on the same line.
+    This corrected version handles DocTR's geometry format properly.
     """
     try:
-        # Find the key word
+        # Find the key word (case-insensitive search)
         key_word = next(word for word in all_words if key_text.lower() in word.value.lower())
         
-        # Get the key's bounding box [xmin, ymin, xmax, ymax]
+        # Get the key's bounding box: ((xmin, ymin), (xmax, ymax))
         key_box = key_word.geometry
         
-        # Find all words that are on the same horizontal line and to the right
-        value_words = [
-            word for word in all_words
-            if word.value != key_word.value and
-               abs(word.geometry[1] - key_box[1]) < 0.02 and # ymin is similar (on the same line)
-               word.geometry[0] > key_box[2] # xmin is to the right of the key's xmax
-        ]
+        # Define the vertical center of the key word to find other words on the same line
+        key_vertical_center = (key_box[0][1] + key_box[1][1]) / 2  # (ymin + ymax) / 2
         
+        # Find all words that are on roughly the same horizontal line and to the right
+        value_words = []
+        for word in all_words:
+            # Check if the word is part of the key itself to avoid self-matching
+            is_part_of_key = any(part.lower() == word.value.lower() for part in key_text.split())
+            if not is_part_of_key:
+                word_vertical_center = (word.geometry[0][1] + word.geometry[1][1]) / 2
+                
+                # Check if the word is vertically aligned AND to the right of the key
+                # A tolerance of 0.02 (2% of image height) is used for vertical alignment
+                if abs(word_vertical_center - key_vertical_center) < 0.02 and \
+                   word.geometry[0][0] > key_box[1][0]:  # word's xmin > key's xmax
+                    value_words.append(word)
+
         if not value_words:
             return ""
             
         # Sort words by their x-coordinate and join them
-        value_words.sort(key=lambda x: x.geometry[0])
+        value_words.sort(key=lambda x: x.geometry[0][0])
         return " ".join([word.value for word in value_words])
 
     except StopIteration:
@@ -90,40 +100,41 @@ def process_license_with_doctr(image_path):
     doc = DocumentFile.from_images(image_path)
     result = predictor(doc)
     
-    # We get a list of all words on the page
-    page_words = [word for block in result.pages[0].blocks for line in block.lines for word in line.words]
+    # We get a flat list of all words on the page for easier processing
+    page_words = [word for page in result.pages for block in page.blocks for line in block.lines for word in line.words]
 
-    # --- NEW: Key-Value Pairing Logic ---
-    # Define the keys we are looking for in the document
+    # --- Key-Value Pairing Logic ---
+    # Define the keys we are looking for in the document.
+    # The keys should be simple and unique.
     key_map = {
-        "full_name": "Name",
-        "license_number": "License No.",
-        "expiration_date": "Expiration Date",
+        "license_number": "License No",
+        "expiration_date": "Expiration",
         "nationality": "Nationality",
-        "date_of_birth": "Date of Birth",
+        "date_of_birth": "Birth",
         "weight_kg": "Weight",
         "height_m": "Height",
         "address": "Address",
-        "blood_type": "Blood Type",
-        "eye_color": "Eyes Color",
+        "blood_type": "Blood",
+        "eye_color": "Eyes",
         "conditions": "Conditions",
-        "agency_code": "Agency Code",
-        "serial_number": "Serial Number"
+        "agency_code": "Agency",
+        "serial_number": "Serial" # Using a partial key for robustness
+        # Name doesn't have a clear key, would need different logic
     }
     
     extracted_data = {}
     for field_name, key_text in key_map.items():
         extracted_data[field_name] = find_value_after_key(key_text, page_words)
     
-    # We still need a method for the photo and signature, as DocTR focuses on text.
-    # For now, we will leave them blank, but a hybrid approach could be used.
-    extracted_data["photograph_base64"] = ""
-    extracted_data["signature_base64"] = ""
-    extracted_data["barcode_data"] = "Not implemented with DocTR yet"
-
-    # Clean up some fields that might have extra text
-    if extracted_data.get("license_number"):
-        extracted_data["license_number"] = re.sub(r'[^A-Z0-9-]', '', extracted_data["license_number"])
+    # Special logic for fields without clear keys
+    # This is an example of how you might find the name based on position
+    # For now, we leave it blank as it's more complex
+    extracted_data["full_name"] = "NEEDS_CUSTOM_LOGIC" 
+    
+    # Photo, signature and barcode are not handled by DocTR's text recognition
+    extracted_data["photograph_base64"] = "NOT_IMPLEMENTED"
+    extracted_data["signature_base64"] = "NOT_IMPLEMENTED"
+    extracted_data["barcode_data"] = "NOT_IMPLEMENTED"
 
     return extracted_data
 
@@ -137,7 +148,8 @@ def scan_license():
         return jsonify({"error": "Missing front or back image"}), 400
 
     front_file = request.files['front_image']
-    back_file = request.files['back_image'] # Back image is not used in this simple DocTR version yet
+    # The back image is available if you want to extend the logic
+    # back_file = request.files['back_image'] 
 
     if front_file.filename == '':
         return jsonify({"error": "No selected file"}), 400
@@ -149,7 +161,8 @@ def scan_license():
 
         try:
             # --- Call the new DocTR processing function ---
-            # NOTE: We are only processing the front image for simplicity here.
+            # NOTE: We are only processing the front image for simplicity.
+            # You could easily process the back image as well and merge the results.
             extracted_data = process_license_with_doctr(front_filepath)
 
             if license_collection is not None:
@@ -171,4 +184,5 @@ def scan_license():
     return jsonify({"error": "Invalid file type"}), 400
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5001)
+    # When deploying, use a production-ready WSGI server like Gunicorn
+    app.run(host='0.0.0.0', debug=True, port=5001)
