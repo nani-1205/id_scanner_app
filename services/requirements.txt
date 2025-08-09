@@ -1,5 +1,9 @@
+# services/requirements.txt
 flask
 pika
 pymongo
 python-dotenv
 requests
+llama-parse
+llama-index
+nest-asyncio
