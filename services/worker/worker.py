@@ -50,7 +50,7 @@ def process_image_with_gemini(image_base64, image_type):
         response = requests.post(
             'http://ollama:11434/api/generate',
             json={
-                "model": "llava-gemini",
+                "model": "llava",
                 "prompt": prompt,
                 "images": [image_base64],
                 "stream": False,
