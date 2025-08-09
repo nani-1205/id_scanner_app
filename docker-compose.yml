@@ -1,0 +1,86 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - web-app
+    networks:
+      - app-net
+
+  web-app:
+    build:
+      context: ./services
+      dockerfile: Dockerfile
+    container_name: web_app
+    restart: always
+    env_file: .env
+    command: python /app/web-app/app.py
+    volumes:
+      - ./services/web-app:/app/web-app
+    depends_on:
+      - rabbitmq
+      - mongo
+    networks:
+      - app-net
+
+  worker:
+    build:
+      context: ./services
+      dockerfile: Dockerfile
+    container_name: ocr_worker
+    restart: always
+    env_file: .env
+    command: python /app/worker/worker.py
+    volumes:
+      - ./services/worker:/app/worker
+    depends_on:
+      - web-app # Ensures web-app code is available if needed, good practice
+      - ollama
+    networks:
+      - app-net
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"   # For workers
+      - "15672:15672" # For web management UI
+    networks:
+      - app-net
+      
+  mongo:
+    image: mongo
+    container_name: mongodb
+    restart: always
+    env_file: .env
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - app-net
+
+  ollama:
+    image: ollama/ollama
+    container_name: ollama_service
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - app-net
+
+volumes:
+  mongo_data:
+  ollama_data:
+
+networks:
+  app-net:
+    driver: bridge

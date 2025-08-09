@@ -1,0 +1,6 @@
+# services/requirements.txt
+flask
+pika
+pymongo
+python-dotenv
+requests
