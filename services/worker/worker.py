@@ -1,3 +1,4 @@
+# services/worker/worker.py
 import os
 import pika
 import json
@@ -5,24 +6,29 @@ import requests
 import base64
 import time
 from pymongo import MongoClient
+from urllib.parse import quote_plus # <-- IMPORT THIS LIBRARY
 
 # This print statement will execute the moment the container starts, confirming the script is running.
 print("--- OCR Worker Service has started successfully. ---")
 
 def get_mongo_client():
+    # Retrieve credentials from environment variables
     mongo_user = os.getenv('MONGO_USER')
     mongo_pass = os.getenv('MONGO_PASS')
     mongo_db_name = os.getenv('MONGO_DB')
     
-    # This connection string is CRITICAL. It tells Mongo where to verify the user's credentials.
-    connection_string = f"mongodb://{mongo_user}:{mongo_pass}@mongo:27017/?authSource={mongo_db_name}"
+    # CRITICAL FIX: Escape the username and password for URL safety
+    safe_user = quote_plus(mongo_user)
+    safe_pass = quote_plus(mongo_pass)
+    
+    # Build the connection string with the escaped credentials and correct authSource
+    connection_string = f"mongodb://{safe_user}:{safe_pass}@mongo:27017/?authSource={mongo_db_name}"
     
     client = MongoClient(connection_string)
     return client[mongo_db_name]
 
 def process_image_with_llm(image_base64, image_type):
-    """Sends an image to Ollama and gets the structured data."""
-    
+    # This function remains the same
     prompt = f"""
     You are an expert OCR system for Philippine government documents.
     Analyze the provided image, which is the {image_type} of a Philippine Driver's License.
@@ -54,21 +60,13 @@ def process_image_with_llm(image_base64, image_type):
         print(f"Sending {image_type} to Ollama for processing...")
         response = requests.post(
             'http://ollama:11434/api/generate',
-            json={
-                "model": "llava", # Using the correct, available model name
-                "prompt": prompt,
-                "images": [image_base64],
-                "stream": False,
-                "format": "json"
-            },
+            json={"model": "llava", "prompt": prompt, "images": [image_base64], "stream": False, "format": "json"},
             timeout=300
         )
         response.raise_for_status()
-        
         print(f"Received response from Ollama for {image_type}.")
         result_json_string = response.json().get('response', '{}')
         return json.loads(result_json_string)
-
     except requests.exceptions.RequestException as e:
         print(f"Error communicating with Ollama: {e}")
         return {"error": f"Ollama connection error: {e}"}
@@ -88,8 +86,10 @@ def callback(ch, method, properties, body):
     if "back_image" in message:
         back_result = process_image_with_llm(message["back_image"], "back side")
         for key, value in back_result.items():
-            if value: # Prioritize non-empty values from either side
+            if value and value not in ["", "N/A"]:
                 final_result[key] = value
+    
+    # RESILIENCY FIX: Only acknowledge the message AFTER it's successfully saved.
     try:
         db = get_mongo_client()
         collection = db.licenses
@@ -99,10 +99,16 @@ def callback(ch, method, properties, body):
             upsert=True
         )
         print(f"[+] Job {job_id} successfully processed and saved to MongoDB.")
+        # Acknowledge the message (remove from queue) only on success
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        print("[+] Job acknowledged. Waiting for next job...")
+
     except Exception as e:
         print(f"[!] Error saving job {job_id} to MongoDB: {e}")
-    ch.basic_ack(delivery_tag=method.delivery_tag)
-    print("[+] Job acknowledged. Waiting for next job...")
+        # Do NOT acknowledge the message. Re-queue it for another try.
+        # This prevents data loss if the DB is temporarily down.
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+        print("[!] Job NOT acknowledged. It will be re-queued.")
 
 def main():
     while True:
