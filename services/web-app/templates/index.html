@@ -2,48 +2,119 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Gemini Document Scanner</title>
+    <title>Intelligent Document Processor</title>
     <style>
         body { font-family: sans-serif; max-width: 800px; margin: auto; padding: 20px; background: #f4f7f6; }
         .container { background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
         h1 { text-align: center; color: #333; }
         .form-group { margin-bottom: 20px; }
         label { font-weight: bold; display: block; margin-bottom: 5px; }
-        input[type="file"] { width: 100%; padding: 8px; box-sizing: border-box; }
+        input[type="file"], input[type="text"], textarea { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+        textarea { resize: vertical; min-height: 80px; }
         button { background: #007bff; color: white; padding: 12px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; width: 100%; }
-        button:hover { background: #0056b3; }
-        #response { margin-top: 20px; padding: 15px; border-radius: 5px; background: #e9ecef; white-space: pre-wrap; word-wrap: break-word; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        button:hover:not(:disabled) { background: #0056b3; }
+        #response-container { margin-top: 20px; }
+        #status-message { padding: 15px; border-radius: 5px; background: #e9ecef; }
+        #results-area { display: none; margin-top: 15px; }
+        pre { background: #2d2d2d; color: #ccc; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Gemini-Powered Document Scanner</h1>
+        <h1>Intelligent Document Processor</h1>
         <form id="upload-form">
             <div class="form-group">
-                <label for="front-image">Front of Document:</label>
-                <input type="file" id="front-image" name="front_image" accept="image/*">
+                <label for="document_image">Document Image:</label>
+                <input type="file" id="document_image" name="document_image" accept="image/*,application/pdf" required>
             </div>
             <div class="form-group">
-                <label for="back-image">Back of Document:</label>
-                <input type="file" id="back-image" name="back_image" accept="image/*">
+                <label for="document_type">Document Type (e.g., "Invoice", "Passport"):</label>
+                <input type="text" id="document_type" name="document_type" required>
             </div>
-            <button type="submit">Scan Document</button>
+            <div class="form-group">
+                <label for="instructions">Specific Instructions (Optional):</label>
+                <textarea id="instructions" name="instructions" placeholder="e.g., Extract only the total amount and due date."></textarea>
+            </div>
+            <button type="submit" id="submit-button">Process Document</button>
         </form>
-        <div id="response">Your results will appear here...</div>
+        <div id="response-container">
+            <div id="status-message">Upload a document to begin.</div>
+            <div id="results-area">
+                <h2>Extracted Data:</h2>
+                <pre id="json-result"></pre>
+            </div>
+        </div>
     </div>
 
 <script>
-document.getElementById('upload-form').addEventListener('submit', async function(event) {
+const form = document.getElementById('upload-form');
+const submitButton = document.getElementById('submit-button');
+const statusMessage = document.getElementById('status-message');
+const resultsArea = document.getElementById('results-area');
+const jsonResult = document.getElementById('json-result');
+
+// Polling function to check for results
+const pollForResult = async (jobId) => {
+    let pollingInterval;
+    const maxRetries = 60; // Poll for a maximum of 2 minutes (60 retries * 2 seconds)
+    let retries = 0;
+
+    const poll = async () => {
+        if (retries >= maxRetries) {
+            clearInterval(pollingInterval);
+            statusMessage.textContent = 'Processing timed out. The worker might be busy. Please check the database later.';
+            statusMessage.style.color = 'orange';
+            submitButton.disabled = false;
+            return;
+        }
+
+        retries++;
+        statusMessage.textContent = `Processing... (Checking for result, attempt ${retries}/${maxRetries})`;
+
+        try {
+            const response = await fetch(`/result/${jobId}`);
+            const result = await response.json();
+
+            if (result.status === 'completed') {
+                clearInterval(pollingInterval);
+                statusMessage.textContent = 'Processing complete!';
+                statusMessage.style.color = 'green';
+                
+                // Display the extracted data
+                jsonResult.textContent = JSON.stringify(result.data.extracted_data, null, 2);
+                resultsArea.style.display = 'block';
+                submitButton.disabled = false;
+
+            } else if (result.status === 'error') {
+                clearInterval(pollingInterval);
+                statusMessage.textContent = `An error occurred: ${result.message}`;
+                statusMessage.style.color = 'red';
+                submitButton.disabled = false;
+            }
+            // If status is 'pending', the interval will just continue.
+        } catch (error) {
+            console.error('Polling error:', error);
+            // Don't stop polling on a network error, just let it retry.
+        }
+    };
+
+    // Start polling immediately and then every 2 seconds
+    poll();
+    pollingInterval = setInterval(poll, 2000);
+};
+
+// Form submission handler
+form.addEventListener('submit', async function(event) {
     event.preventDefault();
-    const responseDiv = document.getElementById('response');
-    responseDiv.textContent = 'Uploading and queuing job... Please wait.';
+    
+    // Reset UI
+    submitButton.disabled = true;
+    resultsArea.style.display = 'none';
+    statusMessage.style.color = 'black';
+    statusMessage.textContent = 'Uploading and queuing job...';
 
-    const formData = new FormData();
-    const frontImage = document.getElementById('front-image').files[0];
-    const backImage = document.getElementById('back-image').files[0];
-
-    if (frontImage) formData.append('front_image', frontImage);
-    if (backImage) formData.append('back_image', backImage);
+    const formData = new FormData(form);
 
     try {
         const response = await fetch('/scan', {
@@ -51,16 +122,20 @@ document.getElementById('upload-form').addEventListener('submit', async function
             body: formData,
         });
         const data = await response.json();
+
         if (response.ok) {
-            responseDiv.style.color = 'green';
-            responseDiv.textContent = `Success!\n${data.message}\n\nThe worker will process this in the background. Check your database for the result.`;
+            statusMessage.textContent = `${data.message} Job ID: ${data.job_id}`;
+            // Start polling for the result
+            pollForResult(data.job_id);
         } else {
-            responseDiv.style.color = 'red';
-            responseDiv.textContent = `Error: ${data.error}`;
+            statusMessage.style.color = 'red';
+            statusMessage.textContent = `Error: ${data.error}`;
+            submitButton.disabled = false;
         }
     } catch (error) {
-        responseDiv.style.color = 'red';
-        responseDiv.textContent = `Network Error: ${error}`;
+        statusMessage.style.color = 'red';
+        statusMessage.textContent = `Network Error: ${error}`;
+        submitButton.disabled = false;
     }
 });
 </script>

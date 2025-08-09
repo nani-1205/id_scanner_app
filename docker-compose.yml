@@ -34,17 +34,16 @@ services:
     container_name: ocr_worker
     restart: always
     env_file: .env
-    # CRITICAL: The "-u" flag forces Python to print logs immediately (unbuffered).
     command: python -u /app/worker/worker.py
     volumes:
       - ./services/worker:/app/worker
     depends_on:
-      ollama:
+      ollama-text:
         condition: service_started
       mongo:
         condition: service_started
       rabbitmq:
-        condition: service_healthy # This ensures the worker only starts when RabbitMQ is ready.
+        condition: service_healthy
     networks:
       - app-net
 
@@ -54,7 +53,7 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
-    healthcheck: # This block checks if RabbitMQ is healthy before other services connect.
+    healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
       timeout: 5s
@@ -75,9 +74,9 @@ services:
     networks:
       - app-net
 
-  ollama:
+  ollama-text:
     image: ollama/ollama
-    container_name: ollama_service
+    container_name: ollama_text_service
     ports:
       - "11434:11434"
     volumes:
