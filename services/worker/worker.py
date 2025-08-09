@@ -7,143 +7,130 @@ import base64
 import time
 from pymongo import MongoClient
 from urllib.parse import quote_plus
+from llama_parse import LlamaParse
+import nest_asyncio
 
-# This print statement will execute the moment the container starts, confirming the script is running.
-print("--- OCR Worker Service has started successfully. ---")
+# Apply a patch to allow asyncio to run in a sync environment
+nest_asyncio.apply()
+
+print("--- General-Purpose Document Worker SCRIPT LOADED. ---")
 
 def get_mongo_client():
-    """Establishes a connection to MongoDB using credentials from environment variables."""
+    """Establishes a connection to MongoDB."""
     mongo_user = os.getenv('MONGO_USER')
     mongo_pass = os.getenv('MONGO_PASS')
     mongo_db_name = os.getenv('MONGO_DB')
-    
-    # CRITICAL FIX: Escape the username and password to handle special characters like '@'.
     safe_user = quote_plus(mongo_user)
     safe_pass = quote_plus(mongo_pass)
-    
-    # This connection string is correct and includes the necessary authSource.
     connection_string = f"mongodb://{safe_user}:{safe_pass}@mongo:27017/?authSource={mongo_db_name}"
-    
     client = MongoClient(connection_string)
+    # The ismaster command is cheap and does not require auth. It will raise an exception on connection failure.
+    client.admin.command('ismaster')
+    print("[+] MongoDB connection successful.")
     return client[mongo_db_name]
 
-def process_image_with_llm(image_base64, image_type):
-    """Sends an image to the Ollama service and gets structured data."""
-    
-    # PROMPT IMPROVEMENT: Added an instruction for the model to specify when a field is unreadable.
+def extract_dynamic_json(document_text, document_type, instructions):
+    """Sends clean text and user guidance to a text model to extract a dynamic JSON."""
+    print(f"Sending text for a '{document_type}' to Llama3 for dynamic JSON extraction...")
     prompt = f"""
-    You are an expert OCR system for Philippine government documents.
-    Analyze the provided image, which is the {image_type} of a Philippine Driver's License.
-    Extract the following fields and return the result ONLY as a single, valid JSON object.
-    If a field is not present or not applicable for this side of the card, use an empty string "" as its value.
-    If you can see a field label but cannot read its value due to image quality (blur, glare, etc.), the value should be "UNREADABLE".
-
-    Fields to extract:
-    - "full_name"
-    - "license_number"
-    - "expiration_date"
-    - "date_of_birth"
-    - "nationality"
-    - "sex"
-    - "height_m"
-    - "weight_kg"
-    - "address"
-    - "blood_type"
-    - "eye_color"
-    - "agency_code"
-    - "dl_codes"
-    - "conditions"
-    - "serial_number"
-    - "emergency_contact_name"
-    - "emergency_contact_address"
-    - "emergency_contact_tel"
+    You are an expert data extraction AI. Your task is to analyze the text from a document and convert it into a structured JSON object.
+    Document Type: {document_type}
+    User Instructions: {instructions}
+    Document Text:
+    ---
+    {document_text}
+    ---
+    Based on the document type and user instructions, identify all relevant key-value pairs, tables, and lists.
+    Return ONLY a single, valid JSON object.
     """
-    
     try:
-        print(f"Sending {image_type} to Ollama for processing...")
         response = requests.post(
-            'http://ollama:11434/api/generate',
-            json={
-                "model": "llava",
-                "prompt": prompt,
-                "images": [image_base64],
-                "stream": False,
-                "format": "json"
-            },
-            timeout=300  # 5-minute timeout for potentially slow AI responses
+            'http://ollama-text:11434/api/generate',
+            json={"model": "llama3", "prompt": prompt, "stream": False, "format": "json"},
+            timeout=180
         )
         response.raise_for_status()
-        
-        print(f"Received response from Ollama for {image_type}.")
         result_json_string = response.json().get('response', '{}')
-        
-        # --- CRITICAL DEBUGGING STEP: Print the raw AI response ---
-        print(f"--- RAW AI RESPONSE FOR {image_type.upper()} ---:\n{result_json_string}\n--------------------")
-        
+        print(f"--- Llama3 Dynamic JSON Response ---:\n{result_json_string}\n--------------------")
         return json.loads(result_json_string)
+    except Exception as e:
+        print(f"Error during Llama3 JSON extraction: {e}")
+        return {"error": f"Llama3 extraction failed: {e}"}
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error communicating with Ollama: {e}")
-        return {"error": f"Ollama connection error: {e}"}
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON from Ollama response: {e}")
-        print(f"Raw response was: {result_json_string}")
-        return {"error": "Failed to decode JSON from model."}
+def process_document(image_base64, document_type, instructions):
+    """Processes an image using the LlamaParse -> Llama3 pipeline."""
+    print(f"Parsing document of type '{document_type}' with LlamaParse...")
+    temp_image_path = "/tmp/document_to_process.tmp"
+    with open(temp_image_path, "wb") as f:
+        f.write(base64.b64decode(image_base64))
+    try:
+        parser = LlamaParse(api_key=os.getenv("LLAMA_CLOUD_API_KEY"), result_type="text")
+        documents = parser.load_data(temp_image_path)
+        if not documents:
+            print("LlamaParse returned no text.")
+            return {"error": "LlamaParse could not process the document."}
+        clean_text = documents[0].text
+        print(f"--- LlamaParse Clean Text Output ---\n{clean_text[:500]}...\n--------------------")
+        return extract_dynamic_json(clean_text, document_type, instructions)
+    except Exception as e:
+        print(f"Error during LlamaParse processing: {e}")
+        return {"error": f"LlamaParse API error: {e}"}
+    finally:
+        if os.path.exists(temp_image_path):
+            os.remove(temp_image_path)
 
 def callback(ch, method, properties, body):
-    """The function that is called when a message is received from the queue."""
-    print("\n[+] Received new job. Processing...")
+    print("\n[+] Received new document processing job.")
     message = json.loads(body)
     job_id = message.get("job_id")
-    final_result = {"job_id": job_id}
-
-    # Process front image if it exists
-    if "front_image" in message:
-        final_result.update(process_image_with_llm(message["front_image"], "front side"))
-    
-    # Process back image if it exists and merge the results
-    if "back_image" in message:
-        back_result = process_image_with_llm(message["back_image"], "back side")
-        for key, value in back_result.items():
-            if value and value not in ["", "N/A"]:
-                final_result[key] = value
-    
-    # This try/except block makes the worker resilient to database failures.
+    final_result = {
+        "job_id": job_id,
+        "document_type": message.get("document_type"),
+        "user_instructions": message.get("instructions"),
+    }
+    extracted_data = process_document(
+        message["image_base64"], 
+        message["document_type"], 
+        message["instructions"]
+    )
+    final_result["extracted_data"] = extracted_data
     try:
         db = get_mongo_client()
-        collection = db.licenses
-        collection.update_one(
-            {'job_id': job_id},
-            {'$set': final_result},
-            upsert=True
-        )
-        print(f"[+] Job {job_id} successfully processed and saved to MongoDB.")
-        # Acknowledge the message (remove from queue) ONLY on success
+        collection = db.processed_documents
+        collection.update_one({'job_id': job_id}, {'$set': final_result}, upsert=True)
+        print(f"[+] Job {job_id} successfully saved to MongoDB.")
         ch.basic_ack(delivery_tag=method.delivery_tag)
-        print("[+] Job acknowledged. Waiting for next job...")
-
+        print("[+] Job acknowledged.")
     except Exception as e:
         print(f"[!] Error saving job {job_id} to MongoDB: {e}")
-        # Do NOT acknowledge the message. RabbitMQ will re-queue it for another try.
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-        print("[!] Job NOT acknowledged. It will be re-queued to prevent data loss.")
+        print("[!] Job NOT acknowledged. Re-queuing.")
 
 def main():
     """Main loop to connect to RabbitMQ and start consuming messages."""
+    print("[*] Worker main function started.")
     while True:
         try:
-            connection = pika.BlockingConnection(pika.ConnectionParameters(host='rabbitmq', heartbeat=600))
+            print("[*] Attempting to connect to RabbitMQ...")
+            # Increased timeout for more resilience on startup
+            connection_params = pika.ConnectionParameters(host='rabbitmq', blocked_connection_timeout=300)
+            connection = pika.BlockingConnection(connection_params)
+            print("[+] RabbitMQ connection successful.")
+            
             channel = connection.channel()
-            channel.queue_declare(queue='ocr_jobs', durable=True)
-            channel.basic_qos(prefetch_count=1)  # Process one message at a time
-            channel.basic_consume(queue='ocr_jobs', on_message_callback=callback)
-            print("[*] Worker is running and waiting for messages.")
+            channel.queue_declare(queue='doc_proc_jobs', durable=True)
+            channel.basic_qos(prefetch_count=1)
+            channel.basic_consume(queue='doc_proc_jobs', on_message_callback=callback)
+            
+            print("[*] Worker is now consuming messages. Waiting for jobs...")
             channel.start_consuming()
         except pika.exceptions.AMQPConnectionError as e:
-            print(f"[!] Connection to RabbitMQ failed: {e}. Retrying in 5 seconds...")
+            print(f"[!] RabbitMQ connection failed: {e}. Retrying in 5 seconds...")
             time.sleep(5)
         except Exception as e:
-            print(f"[!] An unexpected error occurred: {e}. Restarting worker...")
+            print(f"[!] An unexpected error occurred in the main loop: {e}")
+            traceback.print_exc()
+            print("[!] Restarting worker in 10 seconds...")
             time.sleep(10)
 
 if __name__ == '__main__':
