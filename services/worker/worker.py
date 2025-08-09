@@ -6,6 +6,9 @@ import base64
 import time
 from pymongo import MongoClient
 
+# This print statement will execute the moment the container starts, confirming the script is running.
+print("--- OCR Worker Service has started successfully. ---")
+
 def get_mongo_client():
     mongo_user = os.getenv('MONGO_USER')
     mongo_pass = os.getenv('MONGO_PASS')
@@ -52,7 +55,7 @@ def process_image_with_llm(image_base64, image_type):
         response = requests.post(
             'http://ollama:11434/api/generate',
             json={
-                "model": "llava",
+                "model": "llava", # Using the correct, available model name
                 "prompt": prompt,
                 "images": [image_base64],
                 "stream": False,
@@ -85,7 +88,7 @@ def callback(ch, method, properties, body):
     if "back_image" in message:
         back_result = process_image_with_llm(message["back_image"], "back side")
         for key, value in back_result.items():
-            if value:
+            if value: # Prioritize non-empty values from either side
                 final_result[key] = value
     try:
         db = get_mongo_client()
@@ -111,8 +114,8 @@ def main():
             channel.basic_consume(queue='ocr_jobs', on_message_callback=callback)
             print("[*] Worker is running and waiting for messages.")
             channel.start_consuming()
-        except pika.exceptions.AMQPConnectionError:
-            print("[!] Connection to RabbitMQ failed. Retrying in 5 seconds...")
+        except pika.exceptions.AMQPConnectionError as e:
+            print(f"[!] Connection to RabbitMQ failed: {e}. Retrying in 5 seconds...")
             time.sleep(5)
         except Exception as e:
             print(f"[!] An unexpected error occurred: {e}. Restarting worker...")
