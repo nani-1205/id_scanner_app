@@ -4,6 +4,5 @@ pika
 pymongo
 python-dotenv
 requests
-llama-parse
-llama-index
+python-doctr[torch]
 nest-asyncio
