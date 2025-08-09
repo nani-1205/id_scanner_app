@@ -1,6 +1,3 @@
-# docker-compose.yml
-version: '3.8'
-
 services:
   nginx:
     image: nginx:alpine
@@ -41,8 +38,8 @@ services:
     volumes:
       - ./services/worker:/app/worker
     depends_on:
-      - web-app # Ensures web-app code is available if needed, good practice
       - ollama
+      - mongo
     networks:
       - app-net
 
@@ -50,8 +47,8 @@ services:
     image: rabbitmq:3-management-alpine
     container_name: rabbitmq
     ports:
-      - "5672:5672"   # For workers
-      - "15672:15672" # For web management UI
+      - "5672:5672"
+      - "15672:15672"
     networks:
       - app-net
       

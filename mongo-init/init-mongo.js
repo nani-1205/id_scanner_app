@@ -1,8 +1,6 @@
-// mongo-init/init-mongo.js
+// This script runs on first-time initialization to create the application user
 
-// This script will create a new user and a new database
-
-db = db.getSiblingDB(process.env.MONGO_DB); // Switch to or create the 'id_scanner_db'
+db = db.getSiblingDB(process.env.MONGO_DB);
 
 db.createUser({
   user: process.env.MONGO_USER,
@@ -15,4 +13,4 @@ db.createUser({
   ],
 });
 
-print('Successfully created application user and database.');
+print(`--- Successfully created user '${process.env.MONGO_USER}' in database '${process.env.MONGO_DB}' ---`);

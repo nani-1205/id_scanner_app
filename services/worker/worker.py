@@ -1,4 +1,3 @@
-# services/worker/worker.py
 import os
 import pika
 import json
@@ -12,10 +11,13 @@ def get_mongo_client():
     mongo_pass = os.getenv('MONGO_PASS')
     mongo_db_name = os.getenv('MONGO_DB')
     
-    client = MongoClient(f"mongodb://{mongo_user}:{mongo_pass}@mongo:27017/")
+    # This connection string is CRITICAL. It tells Mongo where to verify the user's credentials.
+    connection_string = f"mongodb://{mongo_user}:{mongo_pass}@mongo:27017/?authSource={mongo_db_name}"
+    
+    client = MongoClient(connection_string)
     return client[mongo_db_name]
 
-def process_image_with_gemini(image_base64, image_type):
+def process_image_with_llm(image_base64, image_type):
     """Sends an image to Ollama and gets the structured data."""
     
     prompt = f"""
@@ -54,20 +56,19 @@ def process_image_with_gemini(image_base64, image_type):
                 "prompt": prompt,
                 "images": [image_base64],
                 "stream": False,
-                "format": "json" # This tells Ollama to ensure the output is valid JSON
+                "format": "json"
             },
-            timeout=300 # 5 minute timeout for potentially slow models
+            timeout=300
         )
-        response.raise_for_status() # Raise an exception for bad status codes
+        response.raise_for_status()
         
         print(f"Received response from Ollama for {image_type}.")
-        # The response from Ollama is a JSON string inside a JSON object.
         result_json_string = response.json().get('response', '{}')
         return json.loads(result_json_string)
 
     except requests.exceptions.RequestException as e:
         print(f"Error communicating with Ollama: {e}")
-        return {"error": str(e)}
+        return {"error": f"Ollama connection error: {e}"}
     except json.JSONDecodeError as e:
         print(f"Error decoding JSON from Ollama response: {e}")
         print(f"Raw response was: {result_json_string}")
@@ -77,24 +78,18 @@ def callback(ch, method, properties, body):
     print("\n[+] Received new job. Processing...")
     message = json.loads(body)
     job_id = message.get("job_id")
-
     final_result = {"job_id": job_id}
 
     if "front_image" in message:
-        front_result = process_image_with_gemini(message["front_image"], "front side")
-        final_result.update(front_result)
-    
+        final_result.update(process_image_with_llm(message["front_image"], "front side"))
     if "back_image" in message:
-        back_result = process_image_with_gemini(message["back_image"], "back side")
-        # Merge results, prioritizing non-empty values
+        back_result = process_image_with_llm(message["back_image"], "back side")
         for key, value in back_result.items():
-            if value: # If the back side has a value for a key
+            if value:
                 final_result[key] = value
-
     try:
         db = get_mongo_client()
         collection = db.licenses
-        # Use update_one with upsert to create or update the record
         collection.update_one(
             {'job_id': job_id},
             {'$set': final_result},
@@ -103,7 +98,6 @@ def callback(ch, method, properties, body):
         print(f"[+] Job {job_id} successfully processed and saved to MongoDB.")
     except Exception as e:
         print(f"[!] Error saving job {job_id} to MongoDB: {e}")
-
     ch.basic_ack(delivery_tag=method.delivery_tag)
     print("[+] Job acknowledged. Waiting for next job...")
 
@@ -113,10 +107,9 @@ def main():
             connection = pika.BlockingConnection(pika.ConnectionParameters(host='rabbitmq', heartbeat=600))
             channel = connection.channel()
             channel.queue_declare(queue='ocr_jobs', durable=True)
-            channel.basic_qos(prefetch_count=1) # Process one message at a time
+            channel.basic_qos(prefetch_count=1)
             channel.basic_consume(queue='ocr_jobs', on_message_callback=callback)
-            
-            print("[*] Worker is running and waiting for messages. To exit press CTRL+C")
+            print("[*] Worker is running and waiting for messages.")
             channel.start_consuming()
         except pika.exceptions.AMQPConnectionError:
             print("[!] Connection to RabbitMQ failed. Retrying in 5 seconds...")

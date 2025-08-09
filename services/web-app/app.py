@@ -1,4 +1,3 @@
-# services/web-app/app.py
 import os
 import pika
 import json
@@ -8,12 +7,6 @@ from flask import Flask, request, render_template, jsonify
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-UPLOAD_FOLDER = '/tmp/uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-def get_rabbitmq_connection():
-    return pika.BlockingConnection(pika.ConnectionParameters(host='rabbitmq'))
 
 @app.route('/', methods=['GET'])
 def index():
@@ -30,13 +23,12 @@ def scan():
     for image_type in ['front_image', 'back_image']:
         if image_type in request.files:
             file = request.files[image_type]
-            if file.filename != '':
-                # Read image file and encode it in Base64
+            if file and file.filename != '':
                 image_bytes = file.read()
                 message[image_type] = base64.b64encode(image_bytes).decode('utf-8')
 
     try:
-        connection = get_rabbitmq_connection()
+        connection = pika.BlockingConnection(pika.ConnectionParameters(host='rabbitmq'))
         channel = connection.channel()
         channel.queue_declare(queue='ocr_jobs', durable=True)
         
@@ -44,7 +36,7 @@ def scan():
             exchange='',
             routing_key='ocr_jobs',
             body=json.dumps(message),
-            properties=pika.BasicProperties(delivery_mode=2) # Make message persistent
+            properties=pika.BasicProperties(delivery_mode=2)
         )
         connection.close()
         
