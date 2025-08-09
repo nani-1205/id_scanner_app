@@ -1,3 +1,5 @@
+# docker-compose.yml (Final Version)
+
 services:
   nginx:
     image: nginx:alpine
@@ -38,8 +40,12 @@ services:
     volumes:
       - ./services/worker:/app/worker
     depends_on:
-      - ollama
-      - mongo
+      ollama:
+        condition: service_started
+      mongo:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy # This is the critical fix
     networks:
       - app-net
 
@@ -49,6 +55,11 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
+    healthcheck: # This ensures the worker waits for RabbitMQ to be fully ready
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - app-net
       
