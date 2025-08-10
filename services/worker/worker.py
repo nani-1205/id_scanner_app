@@ -17,11 +17,7 @@ from doctr.models import ocr_predictor
 from mtcnn.mtcnn import MTCNN
 from PIL import Image
 import io
-from skimage.transform import hough_line, hough_line_peaks
-from skimage.feature import canny
-from skimage.morphology import skeletonize
 
-# Apply a patch to allow asyncio to run in a sync environment
 nest_asyncio.apply()
 
 print("--- Professional Grade Document Worker SCRIPT LOADED. ---")
@@ -31,34 +27,42 @@ try:
     print("Loading local DocTR OCR model...")
     ocr_model = ocr_predictor(pretrained=True, detect_orientation=True)
     print("DocTR OCR model loaded successfully.")
-
     print("Loading local MTCNN Face Detector model...")
     face_detector = MTCNN()
     print("MTCNN Face Detector model loaded successfully.")
 except Exception as e:
     print(f"FATAL: Could not load a critical AI model. Error: {e}")
-    print("Worker will exit and be restarted by Docker.")
     sys.exit(1)
 
-def get_mongo_client():
-    """Establishes a connection to MongoDB."""
-    mongo_user, mongo_pass, mongo_db_name = os.getenv('MONGO_USER'), os.getenv('MONGO_PASS'), os.getenv('MONGO_DB')
-    safe_user, safe_pass = quote_plus(mongo_user), quote_plus(mongo_pass)
+# --- Create a single, persistent MongoDB client for efficiency and reliability ---
+print("Initializing MongoDB client...")
+try:
+    mongo_user = os.getenv('MONGO_USER')
+    mongo_pass = os.getenv('MONGO_PASS')
+    mongo_db_name = os.getenv('MONGO_DB')
+    safe_user = quote_plus(mongo_user)
+    safe_pass = quote_plus(mongo_pass)
     connection_string = f"mongodb://{safe_user}:{safe_pass}@mongo:27017/?authSource={mongo_db_name}"
-    client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
-    client.admin.command('ismaster')
-    print("[+] MongoDB connection successful.")
-    return client[mongo_db_name]
+    mongo_client = MongoClient(connection_string, serverSelectionTimeoutMS=10000)
+    db = mongo_client[mongo_db_name]
+    db.command('ping') # Verify connection
+    print("[+] MongoDB client initialized successfully.")
+except Exception as e:
+    print(f"FATAL: Could not connect to MongoDB on startup. Error: {e}")
+    sys.exit(1)
 
 def extract_face_from_image(image_bytes):
     """Detects, crops, and Base64-encodes the most prominent face."""
+    if not face_detector: return None
     try:
         print("Detecting faces...")
         image_np = np.frombuffer(image_bytes, np.uint8)
         image_rgb = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
         image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_BGR2RGB)
         faces = face_detector.detect_faces(image_rgb)
-        if not faces: return None
+        if not faces:
+            print("No faces found.")
+            return None
         main_face = max(faces, key=lambda face: face['confidence'])
         x, y, w, h = main_face['box']
         pad_y, pad_x = int(h * 0.4), int(w * 0.2)
@@ -70,84 +74,60 @@ def extract_face_from_image(image_bytes):
         pil_img.save(buffer, format="JPEG")
         print("Face successfully extracted.")
         return base64.b64encode(buffer.getvalue()).decode('utf-8')
-    except Exception:
+    except Exception as e:
+        print(f"Error during face extraction: {e}")
         return None
 
 def extract_signature_from_image(image_bytes):
-    """Detects, crops, and Base64-encodes signatures using computer vision."""
+    """Detects, crops, and Base64-encodes signatures."""
     try:
         print("Detecting signatures...")
-        image_np = np.frombuffer(image_bytes, np.uint8)
-        image = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
+        image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # Find areas with high contrast, typical of ink on paper
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        
-        # Find contours of potential signature areas
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        potential_signatures = []
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            # Filter based on aspect ratio and size (signatures are usually wide)
-            if w > h * 2 and 50 < w < 400 and 20 < h < 150:
-                 potential_signatures.append((x, y, w, h))
-
+        potential_signatures = [cv2.boundingRect(cnt) for cnt in contours if cv2.boundingRect(cnt)[2] > cv2.boundingRect(cnt)[3] * 2 and 50 < cv2.boundingRect(cnt)[2] < 400]
         if not potential_signatures:
-            print("No potential signatures found.")
+            print("No signatures found.")
             return None
-
-        # Assume the largest valid contour is the signature
         x, y, w, h = max(potential_signatures, key=lambda item: item[2] * item[3])
-        
-        # Crop with padding
         pad = 10
         cropped = image[max(0, y-pad):min(image.shape[0], y+h+pad), max(0, x-pad):min(image.shape[1], x+w+pad)]
-
         pil_img = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
         buffer = io.BytesIO()
         pil_img.save(buffer, format="PNG")
         print("Signature successfully extracted.")
         return base64.b64encode(buffer.getvalue()).decode('utf-8')
-    except Exception:
+    except Exception as e:
+        print(f"Error during signature extraction: {e}")
         return None
 
 def extract_dynamic_json_with_coords(words_with_coords, document_type, instructions):
     """Sends a list of words with coordinates to Llama3 to extract a structured JSON."""
     print(f"Sending text with coordinates for a '{document_type}' to Llama3...")
-    
-    # Format the input for the LLM
     text_input = "\n".join([f'"{word["value"]}" at bbox {word["geometry"]}' for word in words_with_coords])
-
     prompt = f"""
     You are an expert data extraction AI. From the following text, where each word is provided with its bounding box coordinates [xmin, ymin, xmax, ymax], create a structured JSON object.
-
     Document Type: {document_type}
     User Instructions: {instructions}
-
     Text with Coordinates:
     ---
     {text_input}
     ---
-
     Your task is to identify key-value pairs. For each value you extract, you MUST also return a 'bbox' field containing the combined bounding box of the words that make up that value.
     The final JSON should look like this:
     {{
       "field_name_1": {{ "value": "extracted value", "bbox": [xmin, ymin, xmax, ymax] }},
-      "field_name_2": {{ "value": "another value", "bbox": [xmin, ymin, xmax, ymax] }},
-      "line_items": [
-        {{ "description": {{"value": "Item 1", "bbox": [...]}}, "amount": {{"value": 10.00, "bbox": [...]}} }}
-      ]
+      "field_name_2": {{ "value": "another value", "bbox": [xmin, ymin, xmax, ymax] }}
     }}
-    Combine the bounding boxes for multi-word values by taking the minimum of all xmin/ymin and the maximum of all xmax/ymax.
+    Combine bounding boxes for multi-word values by taking the minimum of all xmin/ymin and the maximum of all xmax/ymax.
     Return ONLY a single, valid JSON object.
     """
     try:
         response = requests.post(
             'http://ollama-text:11434/api/generate',
             json={"model": "llama3", "prompt": prompt, "stream": False, "format": "json"},
-            timeout=180
+            timeout=600  # Increased 10-minute timeout for slow AI responses
         )
         response.raise_for_status()
         result_json_string = response.json().get('response', '{}')
@@ -163,22 +143,18 @@ def process_document_offline(image_base64, document_type, instructions):
         image_bytes = base64.b64decode(image_base64)
         doc = DocumentFile.from_images(image_bytes)
         result = ocr_model(doc)
-        
-        # Create a flat list of words with their values and geometries
         words_with_coords = []
         for page in result.pages:
             h, w = page.dimensions
             for block in page.blocks:
                 for line in block.lines:
                     for word in line.words:
-                        # Normalize coordinates to be relative (0.0 to 1.0)
                         xmin, ymin = word.geometry[0]
                         xmax, ymax = word.geometry[1]
                         words_with_coords.append({
                             "value": word.value,
                             "geometry": [round(xmin/w, 4), round(ymin/h, 4), round(xmax/w, 4), round(ymax/h, 4)]
                         })
-        
         return extract_dynamic_json_with_coords(words_with_coords, document_type, instructions)
     except Exception as e:
         print(f"An error occurred during DocTR processing: {e}")
@@ -197,30 +173,21 @@ def callback(ch, method, properties, body):
     print("\n[+] Received new job.")
     message = json.loads(body)
     job_id = message.get("job_id")
-    image_base64 = message["image_base64"]
-    image_bytes = base64.b64decode(image_base64)
+    image_bytes = base64.b64decode(message["image_base64"])
 
-    # --- HYBRID AI PIPELINE ---
     photo = extract_face_from_image(image_bytes)
     signature = extract_signature_from_image(image_bytes)
-    data = process_document_offline(
-        image_base64, 
-        message.get("document_type"), 
-        message.get("instructions")
-    )
+    data = process_document_offline(message["image_base64"], message.get("document_type"), message.get("instructions"))
     
     final_result = {
-        "job_id": job_id,
-        "user_id": message.get("user_id"),
+        "job_id": job_id, "user_id": message.get("user_id"),
         "original_filename": message.get("original_filename"),
         "document_type": message.get("document_type"),
-        "extracted_data": data,
-        "extracted_photograph_base64": photo or "",
+        "extracted_data": data, "extracted_photograph_base64": photo or "",
         "extracted_signature_base64": signature or ""
     }
     
     try:
-        db = get_mongo_client()
         collection = db.processed_documents
         insert_result = collection.insert_one(final_result)
         doc_id = str(insert_result.inserted_id)
@@ -240,12 +207,15 @@ def main():
     while True:
         try:
             print("[*] Attempting to connect to RabbitMQ...")
-            connection = pika.BlockingConnection(pika.ConnectionParameters(host='rabbitmq', blocked_connection_timeout=300))
+            # Increased client heartbeat to 1200 seconds (20 minutes)
+            connection = pika.BlockingConnection(pika.ConnectionParameters(host='rabbitmq', heartbeat=1200))
             print("[+] RabbitMQ connection successful.")
+            
             channel = connection.channel()
             channel.queue_declare(queue='doc_proc_jobs', durable=True)
             channel.basic_qos(prefetch_count=1)
             channel.basic_consume(queue='doc_proc_jobs', on_message_callback=callback)
+            
             print("[*] General-Purpose Worker is running and waiting for documents.")
             channel.start_consuming()
         except Exception as e:
