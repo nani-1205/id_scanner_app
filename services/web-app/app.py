@@ -5,14 +5,18 @@ import json
 import uuid
 import base64
 from flask import Flask, request, render_template, jsonify
+from flask_socketio import SocketIO
 from pymongo import MongoClient
 from urllib.parse import quote_plus
+from bson import ObjectId
 
 app = Flask(__name__)
+# The secret key is needed for session management with Flask-SocketIO
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'a_super_secret_key_for_development')
+socketio = SocketIO(app, async_mode='eventlet')
 
-# --- NEW: MongoDB Connection for the Web App ---
+# --- MongoDB Connection ---
 def get_mongo_client():
-    """Establishes a connection to MongoDB to fetch results."""
     mongo_user = os.getenv('MONGO_USER')
     mongo_pass = os.getenv('MONGO_PASS')
     mongo_db_name = os.getenv('MONGO_DB')
@@ -22,7 +26,7 @@ def get_mongo_client():
     client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
     return client[mongo_db_name]
 
-@app.route('/', methods=['GET'])
+@app.route('/')
 def index():
     return render_template('index.html')
 
@@ -36,10 +40,9 @@ def scan():
         return jsonify({"error": "No selected file."}), 400
 
     job_id = str(uuid.uuid4())
-    
     image_bytes = file.read()
     image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-    document_type = request.form.get('document_type', 'Unknown Document')
+    document_type = request.form.get('document_type', 'Uncategorized')
     instructions = request.form.get('instructions', 'Extract all key-value pairs.')
 
     message = {
@@ -60,33 +63,52 @@ def scan():
             properties=pika.BasicProperties(delivery_mode=2)
         )
         connection.close()
-        
-        return jsonify({
-            "status": "success",
-            "message": f"Job queued successfully. Now polling for results.",
-            "job_id": job_id
-        })
+        return jsonify({"status": "success", "job_id": job_id})
     except Exception as e:
         return jsonify({"error": f"Failed to queue job: {str(e)}"}), 500
 
-# --- NEW: Endpoint for the Frontend to Poll for Results ---
-@app.route('/result/<job_id>', methods=['GET'])
-def get_result(job_id):
+# --- NEW: Internal endpoint for the worker to post results ---
+@app.route('/notify_completion', methods=['POST'])
+def notify_completion():
+    data = request.json
+    job_id = data.get('job_id')
+    result = data.get('result')
+    if job_id and result:
+        # Broadcast the result to the specific client listening for this job_id
+        socketio.emit(f'extraction_complete_{job_id}', result)
+        return jsonify({"status": "notification sent"})
+    return jsonify({"status": "error", "message": "Invalid data"}), 400
+
+# --- NEW: Endpoint to fetch history ---
+@app.route('/history', methods=['GET'])
+def get_history():
     try:
         db = get_mongo_client()
-        collection = db.processed_documents
-        result = collection.find_one({'job_id': job_id})
+        # Sort by _id descending to get the most recent documents first, limit to 20
+        history_cursor = db.processed_documents.find({}, {'extracted_data': 0}).sort('_id', -1).limit(20)
         
-        if result:
-            # We don't need to send the internal MongoDB _id to the frontend
-            result.pop('_id', None) 
-            return jsonify({"status": "completed", "data": result})
-        else:
-            return jsonify({"status": "pending"})
+        history = []
+        for doc in history_cursor:
+            doc['_id'] = str(doc['_id']) # Convert ObjectId to string for JSON
+            history.append(doc)
             
+        return jsonify(history)
     except Exception as e:
-        print(f"Database query error: {e}")
-        return jsonify({"status": "error", "message": "Failed to query database."}), 500
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+
+# --- NEW: Endpoint to fetch a single history item's full data ---
+@app.route('/history/<doc_id>', methods=['GET'])
+def get_history_item(doc_id):
+    try:
+        db = get_mongo_client()
+        item = db.processed_documents.find_one({'_id': ObjectId(doc_id)})
+        if item:
+            item['_id'] = str(item['_id'])
+            return jsonify(item)
+        return jsonify({"error": "Document not found"}), 404
+    except Exception as e:
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    # Use socketio.run() instead of app.run()
+    socketio.run(app, host='0.0.0.0', port=5001, debug=True)

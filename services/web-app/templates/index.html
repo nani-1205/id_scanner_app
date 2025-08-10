@@ -3,141 +3,265 @@
 <head>
     <meta charset="UTF-8">
     <title>Intelligent Document Processor</title>
+    <!-- Import Socket.IO client library -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <style>
-        body { font-family: sans-serif; max-width: 800px; margin: auto; padding: 20px; background: #f4f7f6; }
-        .container { background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
-        h1 { text-align: center; color: #333; }
-        .form-group { margin-bottom: 20px; }
-        label { font-weight: bold; display: block; margin-bottom: 5px; }
-        input[type="file"], input[type="text"], textarea { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
-        textarea { resize: vertical; min-height: 80px; }
-        button { background: #007bff; color: white; padding: 12px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; width: 100%; }
-        button:disabled { background: #6c757d; cursor: not-allowed; }
-        button:hover:not(:disabled) { background: #0056b3; }
-        #response-container { margin-top: 20px; }
-        #status-message { padding: 15px; border-radius: 5px; background: #e9ecef; }
-        #results-area { display: none; margin-top: 15px; }
-        pre { background: #2d2d2d; color: #ccc; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; }
+        :root {
+            --primary-color: #0d6efd;
+            --secondary-color: #6c757d;
+            --light-grey: #f8f9fa;
+            --border-color: #dee2e6;
+            --text-color: #212529;
+            --card-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.1);
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: var(--light-grey);
+            color: var(--text-color);
+            margin: 0;
+            display: flex;
+            height: 100vh;
+        }
+        .sidebar {
+            width: 280px;
+            background-color: #fff;
+            border-right: 1px solid var(--border-color);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: var(--card-shadow);
+        }
+        .sidebar h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 10px;
+        }
+        .history-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            overflow-y: auto;
+        }
+        .history-item {
+            padding: 10px;
+            margin-bottom: 5px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .history-item:hover {
+            background-color: #e9ecef;
+        }
+        .history-item.active {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .history-item span {
+            display: block;
+            font-size: 0.8rem;
+            opacity: 0.7;
+        }
+        .main-content {
+            flex-grow: 1;
+            padding: 40px;
+            overflow-y: auto;
+        }
+        .card {
+            background-color: #fff;
+            padding: 2rem;
+            border-radius: 0.5rem;
+            box-shadow: var(--card-shadow);
+            margin-bottom: 2rem;
+        }
+        .form-group { margin-bottom: 1.5rem; }
+        label { font-weight: 600; display: block; margin-bottom: 0.5rem; }
+        input, textarea { width: 100%; padding: 0.75rem; box-sizing: border-box; border: 1px solid var(--border-color); border-radius: 0.25rem; font-size: 1rem; }
+        button { background: var(--primary-color); color: white; padding: 0.75rem 1.5rem; border: none; border-radius: 0.25rem; cursor: pointer; font-size: 1rem; width: 100%; transition: background-color 0.2s; }
+        button:disabled { background: var(--secondary-color); cursor: not-allowed; }
+        .status-bar { margin-top: 1.5rem; padding: 1rem; border-radius: 0.25rem; text-align: center; }
+        .status-processing { background: #fff3cd; color: #664d03; }
+        .status-success { background: #d1e7dd; color: #0f5132; }
+        .status-error { background: #f8d7da; color: #842029; }
+        .results-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 30px; margin-top: 2rem; }
+        #extracted-photo { width: 100%; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        pre { background: #212529; color: #f8f9fa; padding: 1.5rem; border-radius: 0.25rem; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9rem; }
+        /* Skeleton Loader */
+        .skeleton { animation: shimmer 1.5s infinite linear; background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; }
+        .skeleton-text { width: 100%; height: 20px; margin-bottom: 10px; border-radius: 4px; }
+        .skeleton-img { width: 100%; height: 200px; border-radius: 8px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Intelligent Document Processor</h1>
-        <form id="upload-form">
-            <div class="form-group">
-                <label for="document_image">Document Image:</label>
-                <input type="file" id="document_image" name="document_image" accept="image/*,application/pdf" required>
-            </div>
-            <div class="form-group">
-                <label for="document_type">Document Type (e.g., "Invoice", "Passport"):</label>
-                <input type="text" id="document_type" name="document_type" required>
-            </div>
-            <div class="form-group">
-                <label for="instructions">Specific Instructions (Optional):</label>
-                <textarea id="instructions" name="instructions" placeholder="e.g., Extract only the total amount and due date."></textarea>
-            </div>
-            <button type="submit" id="submit-button">Process Document</button>
-        </form>
-        <div id="response-container">
-            <div id="status-message">Upload a document to begin.</div>
-            <div id="results-area">
-                <h2>Extracted Data:</h2>
-                <pre id="json-result"></pre>
+    <div class="sidebar">
+        <h2>Last Extractions</h2>
+        <ul id="history-list" class="history-list">
+            <!-- History items will be populated by JavaScript -->
+        </ul>
+    </div>
+    <div class="main-content">
+        <div class="card">
+            <h2>Extract Document</h2>
+            <form id="upload-form">
+                <div class="form-group">
+                    <label for="document_image">Document Image / PDF</label>
+                    <input type="file" id="document_image" name="document_image" accept="image/*,application/pdf" required>
+                </div>
+                <div class="form-group">
+                    <label for="document_type">Document Type</label>
+                    <input type="text" id="document_type" name="document_type" placeholder="e.g., Invoice, US Passport, Receipt" required>
+                </div>
+                <div class="form-group">
+                    <label for="instructions">Specific Instructions (Optional)</label>
+                    <textarea id="instructions" name="instructions" placeholder="e.g., Extract only the line items and the total amount."></textarea>
+                </div>
+                <button type="submit" id="submit-button">Extract Document Data</button>
+            </form>
+             <div id="status-bar" class="status-bar" style="display: none;"></div>
+        </div>
+
+        <div id="results-area" class="card" style="display:none;">
+             <div class="results-grid">
+                <div>
+                    <h3>Extracted Data</h3>
+                    <div id="json-result-container">
+                        <pre id="json-result"></pre>
+                    </div>
+                    <div id="skeleton-json" style="display: none;">
+                        <div class="skeleton skeleton-text"></div><div class="skeleton skeleton-text" style="width: 80%;"></div>
+                        <div class="skeleton skeleton-text"></div><div class="skeleton skeleton-text" style="width: 90%;"></div>
+                        <div class="skeleton skeleton-text"></div><div class="skeleton skeleton-text" style="width: 70%;"></div>
+                        <div class="skeleton skeleton-text"></div><div class="skeleton skeleton-text" style="width: 85%;"></div>
+                    </div>
+                </div>
+                <div>
+                    <h3>Extracted Photograph</h3>
+                    <div id="photo-result-container">
+                         <img id="extracted-photo" src="" alt="Extracted Photograph" style="display:none;">
+                         <p id="no-photo-message" style="display:none;">No photograph found in the document.</p>
+                    </div>
+                     <div id="skeleton-photo" style="display: none;">
+                        <div class="skeleton skeleton-img"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
 <script>
+const socket = io();
 const form = document.getElementById('upload-form');
 const submitButton = document.getElementById('submit-button');
-const statusMessage = document.getElementById('status-message');
+const statusBar = document.getElementById('status-bar');
 const resultsArea = document.getElementById('results-area');
 const jsonResult = document.getElementById('json-result');
+const extractedPhoto = document.getElementById('extracted-photo');
+const noPhotoMessage = document.getElementById('no-photo-message');
+const historyList = document.getElementById('history-list');
+const skeletonJson = document.getElementById('skeleton-json');
+const skeletonPhoto = document.getElementById('skeleton-photo');
 
-// Polling function to check for results
-const pollForResult = async (jobId) => {
-    let pollingInterval;
-    const maxRetries = 60; // Poll for a maximum of 2 minutes (60 retries * 2 seconds)
-    let retries = 0;
-
-    const poll = async () => {
-        if (retries >= maxRetries) {
-            clearInterval(pollingInterval);
-            statusMessage.textContent = 'Processing timed out. The worker might be busy. Please check the database later.';
-            statusMessage.style.color = 'orange';
-            submitButton.disabled = false;
-            return;
-        }
-
-        retries++;
-        statusMessage.textContent = `Processing... (Checking for result, attempt ${retries}/${maxRetries})`;
-
-        try {
-            const response = await fetch(`/result/${jobId}`);
-            const result = await response.json();
-
-            if (result.status === 'completed') {
-                clearInterval(pollingInterval);
-                statusMessage.textContent = 'Processing complete!';
-                statusMessage.style.color = 'green';
-                
-                // Display the extracted data
-                jsonResult.textContent = JSON.stringify(result.data.extracted_data, null, 2);
-                resultsArea.style.display = 'block';
-                submitButton.disabled = false;
-
-            } else if (result.status === 'error') {
-                clearInterval(pollingInterval);
-                statusMessage.textContent = `An error occurred: ${result.message}`;
-                statusMessage.style.color = 'red';
-                submitButton.disabled = false;
-            }
-            // If status is 'pending', the interval will just continue.
-        } catch (error) {
-            console.error('Polling error:', error);
-            // Don't stop polling on a network error, just let it retry.
-        }
-    };
-
-    // Start polling immediately and then every 2 seconds
-    poll();
-    pollingInterval = setInterval(poll, 2000);
+// --- Functions to update UI ---
+const showStatus = (message, type) => {
+    statusBar.textContent = message;
+    statusBar.className = `status-bar status-${type}`;
+    statusBar.style.display = 'block';
 };
 
-// Form submission handler
+const showResults = (data) => {
+    jsonResult.textContent = JSON.stringify(data.extracted_data, null, 2);
+    if (data.extracted_photograph_base64) {
+        extractedPhoto.src = `data:image/jpeg;base64,${data.extracted_photograph_base64}`;
+        extractedPhoto.style.display = 'block';
+        noPhotoMessage.style.display = 'none';
+    } else {
+        extractedPhoto.style.display = 'none';
+        noPhotoMessage.style.display = 'block';
+    }
+    skeletonJson.style.display = 'none';
+    skeletonPhoto.style.display = 'none';
+    document.getElementById('json-result-container').style.display = 'block';
+    document.getElementById('photo-result-container').style.display = 'block';
+    resultsArea.style.display = 'block';
+};
+
+const showSkeletonLoader = () => {
+    resultsArea.style.display = 'block';
+    skeletonJson.style.display = 'block';
+    skeletonPhoto.style.display = 'block';
+    document.getElementById('json-result-container').style.display = 'none';
+    document.getElementById('photo-result-container').style.display = 'none';
+};
+
+// --- History Functions ---
+const fetchHistory = async () => {
+    try {
+        const response = await fetch('/history');
+        const history = await response.json();
+        historyList.innerHTML = '';
+        history.forEach(item => {
+            const li = document.createElement('li');
+            li.className = 'history-item';
+            li.dataset.id = item._id;
+            li.innerHTML = `${item.document_type} <span>Job ID: ${item.job_id.substring(0,8)}...</span>`;
+            li.addEventListener('click', async () => {
+                showSkeletonLoader();
+                showStatus('Loading history item...', 'processing');
+                const res = await fetch(`/history/${item._id}`);
+                const fullItem = await res.json();
+                showResults(fullItem);
+                showStatus('Loaded from history.', 'success');
+                // Highlight active item
+                document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
+                li.classList.add('active');
+            });
+            historyList.appendChild(li);
+        });
+    } catch (error) {
+        console.error("Failed to fetch history:", error);
+    }
+};
+
+// --- Form Submission Logic ---
 form.addEventListener('submit', async function(event) {
     event.preventDefault();
-    
-    // Reset UI
     submitButton.disabled = true;
-    resultsArea.style.display = 'none';
-    statusMessage.style.color = 'black';
-    statusMessage.textContent = 'Uploading and queuing job...';
+    showSkeletonLoader();
+    showStatus('Uploading and queuing job...', 'processing');
 
     const formData = new FormData(form);
 
     try {
-        const response = await fetch('/scan', {
-            method: 'POST',
-            body: formData,
-        });
+        const response = await fetch('/scan', { method: 'POST', body: formData });
         const data = await response.json();
 
         if (response.ok) {
-            statusMessage.textContent = `${data.message} Job ID: ${data.job_id}`;
-            // Start polling for the result
-            pollForResult(data.job_id);
+            showStatus(`Processing... Job ID: ${data.job_id}`, 'processing');
+            
+            // Listen on a unique event for this job
+            socket.once(`extraction_complete_${data.job_id}`, (result) => {
+                if (result.status === 'completed') {
+                    showStatus('Processing complete!', 'success');
+                    fetchHistory(); // Refresh history list
+                    // Fetch the full data to display
+                    document.querySelector(`.history-item[data-id='${result.doc_id}']`).click();
+                } else {
+                    showStatus(`Error during processing: ${result.message}`, 'error');
+                }
+                submitButton.disabled = false;
+            });
         } else {
-            statusMessage.style.color = 'red';
-            statusMessage.textContent = `Error: ${data.error}`;
+            showStatus(`Error: ${data.error}`, 'error');
             submitButton.disabled = false;
         }
     } catch (error) {
-        statusMessage.style.color = 'red';
-        statusMessage.textContent = `Network Error: ${error}`;
+        showStatus(`Network Error: ${error}`, 'error');
         submitButton.disabled = false;
     }
 });
+
+// Initial load of history
+document.addEventListener('DOMContentLoaded', fetchHistory);
 </script>
 </body>
 </html>
