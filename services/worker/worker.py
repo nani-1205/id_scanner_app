@@ -9,6 +9,7 @@ import nest_asyncio
 import traceback
 import cv2
 import numpy as np
+import sys
 from pymongo import MongoClient
 from urllib.parse import quote_plus
 from doctr.io import DocumentFile
@@ -20,24 +21,23 @@ import io
 # Apply a patch to allow asyncio (used by doctr) to run in a sync environment like Pika's callback
 nest_asyncio.apply()
 
-print("--- Fully Offline Document Worker with Real-Time Notification SCRIPT LOADED. ---")
+print("--- Fully Offline Document Worker with Face Extraction SCRIPT LOADED. ---")
 
-# --- Initialize AI Models on Startup for maximum performance ---
-print("Loading local DocTR OCR model...")
+# --- Initialize AI Models on Startup (with robust error handling) ---
+# If a model fails to load, the script will exit, and Docker will restart the container.
 try:
+    print("Loading local DocTR OCR model...")
+    # This will download models to the container's cache on first run
     ocr_model = ocr_predictor(pretrained=True, detect_orientation=True)
     print("DocTR OCR model loaded successfully.")
-except Exception as e:
-    print(f"FATAL: Could not load DocTR model. Error: {e}")
-    ocr_model = None
 
-print("Loading local MTCNN Face Detector model...")
-try:
+    print("Loading local MTCNN Face Detector model...")
     face_detector = MTCNN()
     print("MTCNN Face Detector model loaded successfully.")
 except Exception as e:
-    print(f"FATAL: Could not load MTCNN model. Error: {e}")
-    face_detector = None
+    print(f"FATAL: Could not load a critical AI model. Error: {e}")
+    print("Worker will exit. Docker will attempt to restart it.")
+    sys.exit(1) # Exit with an error code, forcing a container restart
 
 def get_mongo_client():
     """Establishes a connection to MongoDB."""
@@ -49,6 +49,7 @@ def get_mongo_client():
     connection_string = f"mongodb://{safe_user}:{safe_pass}@mongo:27017/?authSource={mongo_db_name}"
     client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
     client.admin.command('ismaster') # Verify connection
+    print("[+] MongoDB connection successful.")
     return client[mongo_db_name]
 
 def extract_face_from_image(image_bytes):
@@ -82,7 +83,7 @@ def extract_face_from_image(image_bytes):
 
 def extract_dynamic_json(document_text, document_type, instructions):
     """Stage 2: Sends clean text to a local text model to extract a structured JSON."""
-    print(f"Sending text for a '{document_type}' to Llama3 for dynamic JSON extraction...")
+    print(f"Sending clean text for a '{document_type}' to Llama3 for dynamic JSON extraction...")
     prompt = f"""
     You are an expert data extraction AI. Your task is to analyze the text from a document and convert it into a structured JSON object.
     Document Type: {document_type}
@@ -139,7 +140,7 @@ def callback(ch, method, properties, body):
     job_id = message.get("job_id")
     image_base64 = message["image_base64"]
     image_bytes = base64.b64decode(image_base64)
-
+    
     # --- HYBRID AI PIPELINE ---
     extracted_photo_base64 = extract_face_from_image(image_bytes)
     extracted_data = process_document_offline(
@@ -159,18 +160,13 @@ def callback(ch, method, properties, body):
     try:
         db = get_mongo_client()
         collection = db.processed_documents
-        # Use insert_one and get the inserted_id for the notification
         insert_result = collection.insert_one(final_result)
         doc_id = str(insert_result.inserted_id)
         print(f"[+] Job {job_id} successfully saved to MongoDB with doc_id {doc_id}.")
-        
-        # Notify the frontend via the web-app with the ID for fetching
         notify_web_app(job_id, {"status": "completed", "doc_id": doc_id})
-        
         ch.basic_ack(delivery_tag=method.delivery_tag)
         print("[+] Job acknowledged.")
     except Exception as e:
-        # Notify the frontend of the error
         notify_web_app(job_id, {"status": "error", "message": f"Failed to save to database: {e}"})
         print(f"[!] Error saving job {job_id} to MongoDB: {e}")
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
