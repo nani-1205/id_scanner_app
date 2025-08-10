@@ -26,6 +26,9 @@ services:
       - mongo
     networks:
       - app-net
+    dns: # <--  DNS SECTION
+      - 8.8.8.8
+      - 1.1.1.1    
 
   worker:
     build:
