@@ -7,18 +7,22 @@ import base64
 import time
 import nest_asyncio
 import traceback
+import cv2
+import numpy as np
 from pymongo import MongoClient
 from urllib.parse import quote_plus
 from doctr.io import DocumentFile
 from doctr.models import ocr_predictor
+from mtcnn.mtcnn import MTCNN
+from PIL import Image
+import io
 
-# Apply a patch to allow asyncio to run in a sync environment
+# Apply a patch to allow asyncio (used by doctr) to run in a sync environment like Pika's callback
 nest_asyncio.apply()
 
-print("--- Fully Offline Document Worker SCRIPT LOADED. ---")
+print("--- Fully Offline Document Worker with Face Extraction SCRIPT LOADED. ---")
 
-# --- Stage 1: Initialize the OCR Model (The "Eyes") ---
-# This is done once when the worker starts for maximum performance.
+# --- Initialize AI Models on Startup for maximum performance ---
 print("Loading local DocTR OCR model...")
 try:
     ocr_model = ocr_predictor(pretrained=True, detect_orientation=True)
@@ -27,6 +31,13 @@ except Exception as e:
     print(f"FATAL: Could not load DocTR model. Error: {e}")
     ocr_model = None
 
+print("Loading local MTCNN Face Detector model...")
+try:
+    face_detector = MTCNN()
+    print("MTCNN Face Detector model loaded successfully.")
+except Exception as e:
+    print(f"FATAL: Could not load MTCNN model. Error: {e}")
+    face_detector = None
 
 def get_mongo_client():
     """Establishes a connection to MongoDB."""
@@ -41,10 +52,54 @@ def get_mongo_client():
     print("[+] MongoDB connection successful.")
     return client[mongo_db_name]
 
+def extract_face_from_image(image_bytes):
+    """Detects, crops, and Base64-encodes the most prominent face in an image."""
+    if not face_detector:
+        print("[!] Face detector model is not available. Skipping face extraction.")
+        return None
+    
+    try:
+        print("Detecting faces in the image...")
+        image_np = np.frombuffer(image_bytes, np.uint8)
+        image_rgb = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
+        image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_BGR2RGB)
+
+        faces = face_detector.detect_faces(image_rgb)
+
+        if not faces:
+            print("No faces found in the image.")
+            return None
+
+        main_face = max(faces, key=lambda face: face['confidence'])
+        x, y, width, height = main_face['box']
+        
+        # Add padding for a better crop that includes some context (shoulders, etc.)
+        padding_y = int(height * 0.4)
+        padding_x = int(width * 0.2)
+        
+        y1 = max(0, y - padding_y)
+        y2 = min(image_rgb.shape[0], y + height + padding_y)
+        x1 = max(0, x - padding_x)
+        x2 = min(image_rgb.shape[1], x + width + padding_x)
+
+        cropped_face = image_rgb[y1:y2, x1:x2]
+        
+        # Convert from OpenCV format (numpy array) to a JPEG image in memory
+        pil_img = Image.fromarray(cropped_face)
+        buffer = io.BytesIO()
+        pil_img.save(buffer, format="JPEG")
+        
+        print("Face successfully extracted and encoded.")
+        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+    except Exception as e:
+        print(f"An error occurred during face extraction: {e}")
+        traceback.print_exc()
+        return None
+
 def extract_dynamic_json(document_text, document_type, instructions):
     """Stage 2: Sends clean text to a local text model to extract a structured JSON."""
     print(f"Sending clean text for a '{document_type}' to Llama3 for dynamic JSON extraction...")
-    
     prompt = f"""
     You are an expert data extraction AI. Your task is to analyze the text from a document and convert it into a structured JSON object.
 
@@ -62,17 +117,11 @@ def extract_dynamic_json(document_text, document_type, instructions):
     - Clean up the data and infer correct data types (numbers, dates) where possible.
     - Return ONLY a single, valid JSON object. Do not include any other text or explanations.
     """
-    
     try:
         response = requests.post(
             'http://ollama-text:11434/api/generate',
-            json={
-                "model": "llama3",
-                "prompt": prompt,
-                "stream": False,
-                "format": "json"
-            },
-            timeout=180 # 3 minute timeout
+            json={"model": "llama3", "prompt": prompt, "stream": False, "format": "json"},
+            timeout=180
         )
         response.raise_for_status()
         result_json_string = response.json().get('response', '{}')
@@ -83,26 +132,17 @@ def extract_dynamic_json(document_text, document_type, instructions):
         return {"error": f"Llama3 extraction failed: {e}"}
 
 def process_document_offline(image_base64, document_type, instructions):
-    """Processes an image using the local DocTR -> Llama3 pipeline."""
+    """Stage 1: Processes an image using the local DocTR model to get clean text."""
     if not ocr_model:
         return {"error": "DocTR OCR model is not available."}
-        
-    print(f"Parsing document of type '{document_type}' with local DocTR model...")
-    
+    print(f"Parsing document text of type '{document_type}' with local DocTR model...")
     try:
-        # DocTR can process image bytes directly
         image_bytes = base64.b64decode(image_base64)
         doc = DocumentFile.from_images(image_bytes)
-        
         result = ocr_model(doc)
-        
-        # Assemble the clean text from the DocTR output
         clean_text = result.render()
         print(f"--- DocTR Clean Text Output ---\n{clean_text[:1000]}...\n--------------------")
-
-        # Now, send the clean text to the text model for JSON extraction
         return extract_dynamic_json(clean_text, document_type, instructions)
-
     except Exception as e:
         print(f"An error occurred during DocTR processing: {e}")
         traceback.print_exc()
@@ -112,20 +152,26 @@ def callback(ch, method, properties, body):
     print("\n[+] Received new document processing job.")
     message = json.loads(body)
     job_id = message.get("job_id")
+    image_base64 = message["image_base64"]
+    image_bytes = base64.b64decode(image_base64)
+    
+    # --- HYBRID AI PIPELINE ---
+    # 1. Extract Face (Computer Vision)
+    extracted_photo_base64 = extract_face_from_image(image_bytes)
+    # 2. Extract Text and Structure it (OCR + LLM)
+    extracted_data = process_document_offline(
+        image_base64, 
+        message.get("document_type"), 
+        message.get("instructions")
+    )
     
     final_result = {
         "job_id": job_id,
         "document_type": message.get("document_type"),
         "user_instructions": message.get("instructions"),
+        "extracted_data": extracted_data,
+        "extracted_photograph_base64": extracted_photo_base64 or ""
     }
-    
-    extracted_data = process_document_offline(
-        message["image_base64"], 
-        message["document_type"], 
-        message["instructions"]
-    )
-    
-    final_result["extracted_data"] = extracted_data
 
     try:
         db = get_mongo_client()
@@ -140,20 +186,17 @@ def callback(ch, method, properties, body):
         print("[!] Job NOT acknowledged. Re-queuing.")
 
 def main():
+    """Main loop to connect to RabbitMQ and start consuming messages."""
+    print("[*] Worker main function started.")
     while True:
         try:
-            print("[*] Worker main function started. Waiting for services to be ready...")
-            time.sleep(10) # Add a small delay to ensure RabbitMQ is fully up
-            
             print("[*] Attempting to connect to RabbitMQ...")
             connection = pika.BlockingConnection(pika.ConnectionParameters(host='rabbitmq', blocked_connection_timeout=300))
             print("[+] RabbitMQ connection successful.")
-            
             channel = connection.channel()
             channel.queue_declare(queue='doc_proc_jobs', durable=True)
             channel.basic_qos(prefetch_count=1)
             channel.basic_consume(queue='doc_proc_jobs', on_message_callback=callback)
-            
             print("[*] General-Purpose Worker is running and waiting for documents.")
             channel.start_consuming()
         except Exception as e:

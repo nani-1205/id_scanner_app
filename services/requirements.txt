@@ -1,8 +1,19 @@
 # services/requirements.txt
+
+# For Flask Web App and RabbitMQ Worker
 flask
 pika
 pymongo
 python-dotenv
 requests
+
+# For Offline OCR (DocTR)
 python-doctr[torch]
 nest-asyncio
+
+# For Offline Face Detection (MTCNN)
+mtcnn
+tensorflow
+
+# For Image Manipulation
+Pillow
