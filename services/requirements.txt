@@ -1,13 +1,19 @@
-# services/requirements.txt
+# Core
 flask
 pika
 pymongo
 python-dotenv
 requests
+bcrypt
+
+# Real-Time UI & Server
+Flask-SocketIO
+eventlet
+
+# AI & Computer Vision
 python-doctr[torch]
 nest-asyncio
 mtcnn
 tensorflow
 Pillow
-Flask-SocketIO
-eventlet # A production-ready server for Flask-SocketIO
+scikit-image

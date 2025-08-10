@@ -1,9 +1,6 @@
-# services/Dockerfile
-
 FROM python:3.10-slim
 
-# Install essential system libraries required by OpenCV, TensorFlow, and Pillow
-# This prevents common runtime errors like "libGL.so.1: cannot open shared object file"
+# Install system libraries for OpenCV, TensorFlow, Pillow, etc.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libgl1-mesa-glx \
@@ -16,8 +13,5 @@ WORKDIR /app
 
 COPY requirements.txt requirements.txt
 
-# Install Python packages using pip, with an increased timeout for large libraries
-# like TensorFlow.
+# Install Python packages with an increased timeout
 RUN pip --default-timeout=300 install --no-cache-dir -r requirements.txt
-
-# The CMD to run the specific service (web-app or worker) is provided in the docker-compose.yml file.
