@@ -145,4 +145,4 @@ def get_dashboard_stats():
         return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    socketio.run(app, host='0._id=0.0.0', port=5001, debug=True)
+    socketio.run(app, host='0._id=0.0.0.0', port=5001, debug=True)
