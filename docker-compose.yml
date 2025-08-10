@@ -25,10 +25,7 @@ services:
       - rabbitmq
       - mongo
     networks:
-      - app-net
-    dns: # <--  DNS SECTION
-      - 8.8.8.8
-      - 1.1.1.1    
+      - app-net  
 
   worker:
     build:

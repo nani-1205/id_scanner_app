@@ -9,10 +9,10 @@ from flask_socketio import SocketIO
 from pymongo import MongoClient
 from urllib.parse import quote_plus
 from bson import ObjectId
-from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret')
+# Use eventlet as the async_mode for production readiness
 socketio = SocketIO(app, async_mode='eventlet')
 
 # --- MongoDB Connection ---
@@ -23,15 +23,12 @@ def get_mongo_client():
     client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
     return client[mongo_db_name]
 
-# --- User Session Stub ---
-# In a real app, this would be a full Flask-Login implementation
 @app.before_request
 def before_request():
     if 'user_id' not in session:
-        session['user_id'] = 'default_user' # Hardcode a default user for simplicity
+        session['user_id'] = 'default_user'
         session['username'] = 'Admin'
 
-# --- Main Routes ---
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -44,14 +41,11 @@ def scan():
 
     job_id = str(uuid.uuid4())
     message = {
-        "job_id": job_id,
-        "image_base64": base64.b64encode(file.read()).decode('utf-8'),
+        "job_id": job_id, "image_base64": base64.b64encode(file.read()).decode('utf-8'),
         "document_type": request.form.get('document_type', 'Uncategorized'),
         "instructions": request.form.get('instructions', 'Extract all key-value pairs.'),
-        "user_id": session.get('user_id'),
-        "original_filename": file.filename
+        "user_id": session.get('user_id'), "original_filename": file.filename
     }
-
     try:
         connection = pika.BlockingConnection(pika.ConnectionParameters(host='rabbitmq'))
         channel = connection.channel()
@@ -62,7 +56,6 @@ def scan():
     except Exception as e:
         return jsonify({"error": f"Failed to queue job: {str(e)}"}), 500
 
-# --- Worker Notification Endpoint ---
 @app.route('/notify_completion', methods=['POST'])
 def notify_completion():
     data = request.json
@@ -73,33 +66,26 @@ def notify_completion():
         return jsonify({"status": "notification sent"})
     return jsonify({"status": "error", "message": "Invalid data"}), 400
 
-# --- History & Data API ---
 @app.route('/history', methods=['GET'])
 def get_history():
     user_id = session.get('user_id')
     search_query = request.args.get('q', '')
-    
     query_filter = {'user_id': user_id}
-    if search_query:
-        query_filter['$text'] = {'$search': search_query}
-
+    if search_query: query_filter['$text'] = {'$search': search_query}
     try:
         db = get_mongo_client()
         history_cursor = db.processed_documents.find(
             query_filter, 
             {'extracted_data': 0, 'extracted_photograph_base64': 0, 'extracted_signature_base64': 0}
         ).sort('_id', -1).limit(50)
-        
         history = [{'id': str(doc['_id']), 'filename': doc.get('original_filename', 'N/A'), 'type': doc.get('document_type', 'N/A')} for doc in history_cursor]
         return jsonify(history)
-    except Exception as e:
-        return jsonify({"error": f"Database error: {str(e)}"}), 500
+    except Exception as e: return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 @app.route('/document/<doc_id>', methods=['GET', 'PUT'])
 def get_document(doc_id):
     db = get_mongo_client()
     user_id = session.get('user_id')
-
     try:
         if request.method == 'GET':
             item = db.processed_documents.find_one({'_id': ObjectId(doc_id), 'user_id': user_id})
@@ -107,42 +93,29 @@ def get_document(doc_id):
                 item['_id'] = str(item['_id'])
                 return jsonify(item)
             return jsonify({"error": "Document not found"}), 404
-
         if request.method == 'PUT':
             updates = request.json.get('extracted_data')
             result = db.processed_documents.update_one(
-                {'_id': ObjectId(doc_id), 'user_id': user_id},
-                {'$set': {'extracted_data': updates}}
+                {'_id': ObjectId(doc_id), 'user_id': user_id}, {'$set': {'extracted_data': updates}}
             )
-            if result.matched_count:
-                return jsonify({"status": "success", "message": "Document updated."})
+            if result.matched_count: return jsonify({"status": "success", "message": "Document updated."})
             return jsonify({"error": "Document not found or permission denied"}), 404
-
-    except Exception as e:
-        return jsonify({"error": f"Database error: {str(e)}"}), 500
+    except Exception as e: return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 @app.route('/dashboard_stats', methods=['GET'])
 def get_dashboard_stats():
-    # In a real app, you'd add date filters and more complex aggregations
     db = get_mongo_client()
     user_id = session.get('user_id')
     try:
         total_docs = db.processed_documents.count_documents({'user_id': user_id})
-        
         pipeline = [
-            {'$match': {'user_id': user_id}},
-            {'$group': {'_id': '$document_type', 'count': {'$sum': 1}}},
-            {'$sort': {'count': -1}},
-            {'$limit': 5}
+            {'$match': {'user_id': user_id}}, {'$group': {'_id': '$document_type', 'count': {'$sum': 1}}},
+            {'$sort': {'count': -1}}, {'$limit': 5}
         ]
         doc_types = list(db.processed_documents.aggregate(pipeline))
-        
-        return jsonify({
-            "total_documents": total_docs,
-            "document_types": doc_types
-        })
-    except Exception as e:
-        return jsonify({"error": f"Database error: {str(e)}"}), 500
+        return jsonify({"total_documents": total_docs, "document_types": doc_types})
+    except Exception as e: return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    socketio.run(app, host='0._id=0.0.0.0', port=5001, debug=True)
+    # This is the corrected line. "0.0.0.0" is a special address that doesn't require DNS lookup.
+    socketio.run(app, host='0.0.0.0', port=5001, debug=True)
