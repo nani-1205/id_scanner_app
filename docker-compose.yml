@@ -25,7 +25,10 @@ services:
       - rabbitmq
       - mongo
     networks:
-      - app-net  
+      - app-net
+    dns: # This is the critical fix for the web-app startup crash
+      - 1.1.1.1   # Cloudflare DNS
+      - 8.8.8.8   # Google DNS
 
   worker:
     build:
@@ -34,7 +37,7 @@ services:
     container_name: ocr_worker
     restart: always
     env_file: .env
-    command: python -u /app/worker/worker.py
+    command: python -u /app/worker/worker.py # The "-u" flag ensures logs appear immediately
     volumes:
       - ./services/worker:/app/worker
     depends_on:
@@ -43,7 +46,7 @@ services:
       mongo:
         condition: service_started
       rabbitmq:
-        condition: service_healthy
+        condition: service_healthy # This prevents the worker from starting too early
     networks:
       - app-net
 
@@ -53,7 +56,7 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
-    healthcheck:
+    healthcheck: # This block ensures RabbitMQ is fully ready before the worker starts
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
       timeout: 5s
@@ -70,7 +73,7 @@ services:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
-      - ./mongo-init:/docker-entrypoint-initdb.d
+      - ./mongo-init:/docker-entrypoint-initdb.d # This runs the user creation script
     networks:
       - app-net
 
