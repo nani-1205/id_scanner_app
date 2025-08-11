@@ -11,8 +11,8 @@ while ! curl -s --fail -o /dev/null http://localhost:11434; do
 done
 echo "Ollama server is up and running."
 
-# --- PULL THE REQUIRED LANGUAGE MODEL ---
-REQUIRED_MODEL="llama3"
+# --- PULL THE REQUIRED VISION MODEL ---
+REQUIRED_MODEL="phi3:vision"
 
 if ! ollama list | grep -q "$REQUIRED_MODEL"; then
     echo "'$REQUIRED_MODEL' model not found. Pulling..."
@@ -21,7 +21,7 @@ else
     echo "'$REQUIRED_MODEL' model already exists."
 fi
 
-echo "Language model is available."
+echo "Vision model is available."
 
 # Wait for the server process to exit to keep the container alive
 wait $pid
