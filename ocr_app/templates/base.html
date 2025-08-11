@@ -12,7 +12,11 @@
         <nav>
             <a href="{{ url_for('index') }}">Home</a>
             <a href="{{ url_for('history') }}">History</a>
-            <a href="{{ url_for('swagger_ui.index') }}">API Docs</a>
+            <!-- 
+              THE FIX IS ON THIS LINE: 
+              The endpoint for Flask-Swagger-UI is 'swagger_ui.show', not 'swagger_ui.index'.
+            -->
+            <a href="{{ url_for('swagger_ui.show') }}">API Docs</a>
         </nav>
     </header>
     <main class="container">
@@ -28,7 +32,7 @@
         {% block content %}{% endblock %}
     </main>
     <footer>
-        <p>&copy; 2024 - Fully Automated OCR System</p>
+        <p>&copy; 2025 - Fully Automated OCR System</p>
     </footer>
 </body>
 </html>
