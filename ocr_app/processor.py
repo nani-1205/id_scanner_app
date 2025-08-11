@@ -10,8 +10,9 @@ from database import save_processed_document
 # --- Configuration ---
 OLLAMA_API_URL = "http://ollama:11434/api/generate"
 FACE_CASCADE = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
-# This name matches the model we are creating in the new entrypoint.sh
-AI_MODEL = "phi3-vision"
+# <<< THE CHANGE IS HERE >>>
+# This name now matches the model we are pulling in the entrypoint.sh script.
+AI_MODEL = "llava-phi3"
 
 def get_extraction_prompt(doc_type):
     """
@@ -70,7 +71,7 @@ def get_extraction_prompt(doc_type):
 
 @shared_task(bind=True)
 def process_documents_task(self, file_contents, doc_type):
-    """Celery task using the powerful Phi-3 Vision model in a single step."""
+    """Celery task using the powerful llava-phi3 model in a single step."""
     try:
         image_bytes_list = list(file_contents.values())
         base64_images = [base64.b64encode(img).decode('utf-8') for img in image_bytes_list]
