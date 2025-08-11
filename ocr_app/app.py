@@ -45,19 +45,25 @@ def setup():
 def index():
     if request.method == 'POST':
         doc_type = request.form.get('doc_type')
-        files = request.files.getlist('document_images')
+        # Get files by their specific names from the updated form
+        front_file = request.files.get('front_image')
+        back_file = request.files.get('back_image')
 
-        if not doc_type or not files or all(f.filename == '' for f in files):
-            flash('Please select a document type and at least one image.')
+        # Basic validation: A document type and a front image are required.
+        if not doc_type or not front_file:
+            flash('Please select a document type and upload at least a front image.')
             return redirect(request.url)
 
-        # To pass files to Celery, we must read their content first
-        file_contents = {f.filename: f.read() for f in files}
+        # Create a dictionary to pass to Celery. This is unambiguous.
+        # We read the file contents here to make them serializable for the task queue.
+        file_contents = {'front': front_file.read()}
+        if back_file:
+            file_contents['back'] = back_file.read()
 
-        # Start the background task using .delay()
+        # Start the background task with the structured file data
         task = process_documents_task.delay(file_contents, doc_type)
 
-        # Redirect to the processing page with the unique task ID
+        # Redirect to the processing page, which will poll for the result
         return redirect(url_for('processing_page', task_id=task.id))
 
     return render_template('index.html')

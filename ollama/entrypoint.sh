@@ -12,13 +12,10 @@ done
 echo "Ollama server is up and ready to accept commands."
 
 # --- PULL THE REQUIRED VISION MODEL ---
-# <<< THE CHANGE IS HERE >>>
-# We are now using the user-suggested llava-phi3 model.
 REQUIRED_MODEL="llava-phi3"
 
 if ! ollama list | grep -q "$REQUIRED_MODEL"; then
     echo "'$REQUIRED_MODEL' model not found. Pulling directly with Ollama..."
-    # This is the native, correct way to download the model.
     ollama pull "$REQUIRED_MODEL"
     if [ $? -ne 0 ]; then
         echo "ERROR: 'ollama pull' command failed. Please check the model name and network connection."
