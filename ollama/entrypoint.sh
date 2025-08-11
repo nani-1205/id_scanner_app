@@ -13,8 +13,8 @@ echo "Ollama server is up and ready to accept commands."
 
 # --- PULL THE REQUIRED VISION MODEL ---
 # <<< THE CHANGE IS HERE >>>
-# We are now using the state-of-the-art MiniCPM-V 2.6 model.
-REQUIRED_MODEL="minicpm"
+# Using the user-specified, precise model tag for MiniCPM-V.
+REQUIRED_MODEL="minicpm-v:8b"
 
 if ! ollama list | grep -q "$REQUIRED_MODEL"; then
     echo "'$REQUIRED_MODEL' model not found. Pulling directly with Ollama..."

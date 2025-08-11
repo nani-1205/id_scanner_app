@@ -11,8 +11,8 @@ from database import save_processed_document
 OLLAMA_API_URL = "http://ollama:11434/api/generate"
 FACE_CASCADE = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
 # <<< THE CHANGE IS HERE >>>
-# This name now matches the new model we are pulling in the entrypoint.sh script.
-AI_MODEL = "minicpm"
+# This name now matches the specific model we are pulling in the entrypoint.sh script.
+AI_MODEL = "minicpm-v:8b"
 
 # --- PaddleOCR Initialization ---
 print("Initializing PaddleOCR...")
