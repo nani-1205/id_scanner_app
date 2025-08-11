@@ -12,19 +12,16 @@ from database import save_processed_document
 # --- Configuration ---
 OLLAMA_API_URL = "http://ollama:11434/api/generate"
 FACE_CASCADE = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
-# We now use a pure language model for structuring text
 LANGUAGE_MODEL = "llama3"
 
 def extract_raw_text_with_tesseract(image_bytes_list):
     """
     Step 1: Use Tesseract (a specialized OCR engine) to extract all text from images.
-    This is much more accurate for pure text recognition than a multimodal model.
     """
     full_text = ""
     for image_bytes in image_bytes_list:
         try:
             image = Image.open(io.BytesIO(image_bytes))
-            # Pre-processing can be added here (e.g., grayscale, thresholding) if needed
             text = pytesseract.image_to_string(image, lang='eng')
             full_text += text + "\n\n"
         except Exception as e:
@@ -34,7 +31,6 @@ def extract_raw_text_with_tesseract(image_bytes_list):
 def structure_text_with_llama3(raw_text, doc_type):
     """
     Step 2: Use a powerful language model (Llama 3) to structure the raw text.
-    The model's only job is to understand and organize, not to see.
     """
     if doc_type != "Driving License":
         return {"error": "This document type is not yet supported by the structuring engine."}
@@ -78,7 +74,7 @@ def structure_text_with_llama3(raw_text, doc_type):
                 "model": LANGUAGE_MODEL,
                 "prompt": prompt,
                 "stream": False,
-                "format": "json" # Crucial for getting a clean JSON response
+                "format": "json"
             },
             timeout=180
         )
@@ -95,19 +91,16 @@ def process_documents_task(self, file_contents, doc_type):
     try:
         image_bytes_list = list(file_contents.values())
         
-        # --- Step 1: High-Accuracy OCR with Tesseract ---
         self.update_state(state='PROGRESS', meta={'status': 'Performing high-accuracy OCR with Tesseract...'})
         raw_text = extract_raw_text_with_tesseract(image_bytes_list)
         if not raw_text.strip():
             raise Exception("Tesseract failed to extract any text from the document.")
 
-        # --- Step 2: Intelligent Structuring with Llama 3 ---
         self.update_state(state='PROGRESS', meta={'status': f'Structuring text with {LANGUAGE_MODEL} model...'})
         final_data = structure_text_with_llama3(raw_text, doc_type)
         if "error" in final_data:
             raise Exception(final_data["error"])
 
-        # --- Final Steps ---
         self.update_state(state='PROGRESS', meta={'status': 'Detecting faces...'})
         face_image_bytes = detect_and_crop_face(image_bytes_list)
         
@@ -117,7 +110,9 @@ def process_documents_task(self, file_contents, doc_type):
 
         return {'status': 'Task Complete!', 'result': doc_id}
     except Exception as e:
-        self.update_state(state='FAILURE', meta={'status': str(e)})
+        # <<< THE FIX IS HERE >>>
+        # The incorrect `self.update_state` line has been removed.
+        # Now, we just re-raise the exception and let Celery handle it properly.
         raise e
 
 def detect_and_crop_face(image_bytes_list):
