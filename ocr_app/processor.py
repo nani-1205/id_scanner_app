@@ -9,71 +9,114 @@ from database import save_processed_document
 OLLAMA_API_URL = "http://ollama:11434/api/generate"
 FACE_CASCADE = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
 
-def generate_prompt(doc_type):
-    """Generates a highly specific prompt based on the document type."""
-    
-    # --- PROMPT FOR PHILIPPINE DRIVER'S LICENSE ---
+# We select the more powerful model here
+AI_MODEL = "bakllava" 
+
+def generate_key_value_prompt(doc_type):
+    """
+    Generates a prompt for the AI to find labels and their corresponding values.
+    This is more robust than hardcoded regions of interest (ROI).
+    """
     if doc_type == "Driving License":
         return """
-        You are a highly accurate OCR data extraction expert specializing in Philippine Driver's Licenses.
-        Your task is to analyze the provided front and back images of the license.
-        Extract the information and populate the following JSON structure precisely.
-        Do NOT add any fields that are not in this structure.
-        Do NOT add commentary, notes, or markdown.
-        If you cannot find information for a field, leave its value as an empty string "".
-
-        {
-          "lastName": "",
-          "firstName": "",
-          "middleName": "",
-          "nationality": "",
-          "sex": "",
-          "dateOfBirth": "YYYY/MM/DD",
-          "weightKg": "",
-          "heightM": "",
-          "address": "",
-          "licenseNo": "",
-          "expirationDate": "YYYY/MM/DD",
-          "agencyCode": "",
-          "bloodType": "",
-          "eyesColor": "",
-          "dlCodes": "",
-          "conditions": "",
-          "serialNumber": ""
-        }
+        You are an AI assistant specialized in extracting information from Philippine Driver's Licenses.
+        Analyze the provided images (front and back).
+        Identify all fields and their corresponding values.
+        Return the result as a single, minified JSON object.
+        The keys in the JSON should be the field names as seen on the license (e.g., "License No.", "Last Name, First Name, Middle Name", "Expiration Date").
+        The values should be the text you read for that field.
+        Do NOT add any commentary or text outside of the JSON object.
+        Combine information from both the front and back images into one JSON object.
         """
-
-    # --- GENERIC PROMPT FOR OTHER DOCUMENT TYPES ---
     else:
+        # Generic fallback for other documents
         return f"""
-        You are an expert OCR system for identity documents.
-        Analyze the provided image(s) of a "{doc_type}".
-        Extract key information and return it as a clean, minified JSON object.
-        Do NOT include any explanatory text or markdown formatting.
-        The JSON should contain common keys like "firstName", "lastName", "documentNumber", "dateOfBirth", "expiryDate".
-        If a field is not present, omit it from the JSON.
+        Analyze the provided image of a {doc_type}.
+        Find all field labels and their corresponding text values.
+        Return a single JSON object where keys are the field labels and values are the extracted text.
         """
+
+def post_process_data(raw_data):
+    """Cleans up and restructures the AI's raw output for consistency."""
+    processed = {}
+    
+    # Create a mapping from possible AI outputs to our desired database keys
+    key_map = {
+        "last name, first name, middle name": "fullName",
+        "nationality": "nationality",
+        "sex": "sex",
+        "date of birth": "dateOfBirth",
+        "weight (kg)": "weightKg",
+        "height (m)": "heightM",
+        "address": "address",
+        "license no.": "licenseNo",
+        "expiration date": "expirationDate",
+        "agency code": "agencyCode",
+        "blood type": "bloodType",
+        "eyes color": "eyesColor",
+        "dl codes": "dlCodes",
+        "conditions": "conditions",
+        "serial number": "serialNumber"
+    }
+
+    # Normalize keys from raw_data (lowercase, remove punctuation)
+    normalized_raw_data = { k.lower().strip().replace('.', ''): v for k, v in raw_data.items() }
+
+    for map_key, db_key in key_map.items():
+        processed[db_key] = normalized_raw_data.get(map_key, "")
+
+    # Special handling for the full name
+    if "fullName" in processed:
+        full_name_str = processed.pop("fullName", "")
+        name_parts = [name.strip() for name in full_name_str.split(',')]
+        processed['lastName'] = name_parts[0] if len(name_parts) > 0 else ""
+        if len(name_parts) > 1:
+            first_middle = name_parts[1].split()
+            processed['firstName'] = first_middle[0] if len(first_middle) > 0 else ""
+            processed['middleName'] = " ".join(first_middle[1:]) if len(first_middle) > 1 else ""
+        else:
+            processed['firstName'] = ""
+            processed['middleName'] = ""
+
+    return processed
+
 
 @shared_task(bind=True)
 def process_documents_task(self, file_contents, doc_type):
-    """Celery task to process documents in the background."""
+    """Celery task using Key-Value Pair Extraction for high accuracy."""
     try:
-        self.update_state(state='PROGRESS', meta={'status': 'Reading images...'})
+        self.update_state(state='PROGRESS', meta={'status': 'Loading images and preparing AI prompt...'})
         image_bytes_list = list(file_contents.values())
+        base64_images = [base64.b64encode(img).decode('utf-8') for img in image_bytes_list]
+        
+        prompt = generate_key_value_prompt(doc_type)
+
+        self.update_state(state='PROGRESS', meta={'status': f'Contacting AI model ({AI_MODEL})... This may take a moment.'})
+        
+        response = requests.post(
+            OLLAMA_API_URL,
+            json={
+                "model": AI_MODEL,
+                "prompt": prompt,
+                "images": base64_images,
+                "stream": False,
+                "format": "json"
+            },
+            timeout=180
+        )
+        response.raise_for_status()
+        raw_extracted_data = json.loads(response.json().get('response', '{}'))
+
+        self.update_state(state='PROGRESS', meta={'status': 'Cleaning and structuring AI output...'})
+        final_data = post_process_data(raw_extracted_data)
 
         self.update_state(state='PROGRESS', meta={'status': 'Detecting faces...'})
         face_image_bytes = detect_and_crop_face(image_bytes_list)
-
-        self.update_state(state='PROGRESS', meta={'status': 'Contacting AI for OCR... This may take a moment.'})
-        extracted_data = extract_data_with_ollama(image_bytes_list, doc_type)
-
-        if "error" in extracted_data:
-            raise Exception(f"AI Processing Error: {extracted_data.get('raw_response', 'Unknown AI error')}")
-
-        self.update_state(state='PROGRESS', meta={'status': 'Saving results to database...'})
-        json_data = json.dumps(extracted_data)
-        doc_id = save_processed_document(doc_type, json_data, image_bytes_list, face_image_bytes)
         
+        self.update_state(state='PROGRESS', meta={'status': 'Saving to database...'})
+        json_data = json.dumps(final_data)
+        doc_id = save_processed_document(doc_type, json_data, image_bytes_list, face_image_bytes)
+
         return {'status': 'Task Complete!', 'result': doc_id}
     except Exception as e:
         self.update_state(state='FAILURE', meta={'status': str(e)})
@@ -97,31 +140,3 @@ def detect_and_crop_face(image_bytes_list):
             print(f"Error during face detection: {e}")
             continue
     return None
-
-def extract_data_with_ollama(image_bytes_list, doc_type):
-    """Uses the new prompt generation strategy."""
-    base64_images = [base64.b64encode(img).decode('utf-8') for img in image_bytes_list]
-    
-    # Generate the specific prompt for the document type
-    prompt = generate_prompt(doc_type)
-
-    try:
-        response = requests.post(
-            OLLAMA_API_URL,
-            json={
-                "model": "llava",
-                "prompt": prompt,
-                "images": base64_images,
-                "stream": False,
-                "format": "json"
-            },
-            timeout=180
-        )
-        response.raise_for_status()
-        response_data = response.json()
-        extracted_json_str = response_data.get('response', '{}')
-        return json.loads(extracted_json_str)
-    except requests.exceptions.RequestException as e:
-        return {"error": f"Failed to communicate with the AI model: {e}"}
-    except json.JSONDecodeError as e:
-        return {"error": "AI model returned invalid JSON.", "raw_response": extracted_json_str}

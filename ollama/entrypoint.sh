@@ -1,10 +1,9 @@
 #!/bin/sh
-
 # Start the Ollama server in the background
 /bin/ollama serve &
 pid=$!
 
-# Wait for the server to be ready by polling its status endpoint
+# Wait for the server to be ready
 echo "Waiting for Ollama server to start..."
 while ! curl -s --fail -o /dev/null http://localhost:11434; do
     sleep 1
@@ -12,14 +11,20 @@ while ! curl -s --fail -o /dev/null http://localhost:11434; do
 done
 echo "Ollama server is up and running."
 
-# Check if the 'llava' model already exists. If not, pull it.
-if ! ollama list | grep -q "llava"; then
-    echo "'llava' model not found. Pulling the model..."
-    ollama pull llava
-    echo "Model 'llava' pulled successfully."
-else
-    echo "'llava' model already exists."
-fi
+# --- PULL REQUIRED MODELS ---
+# List of models our application needs
+REQUIRED_MODELS="llava bakllava"
+
+for model in $REQUIRED_MODELS; do
+    if ! ollama list | grep -q "$model"; then
+        echo "'$model' model not found. Pulling..."
+        ollama pull "$model"
+    else
+        echo "'$model' model already exists."
+    fi
+done
+
+echo "All required models are available."
 
 # Wait for the server process to exit to keep the container alive
 wait $pid
