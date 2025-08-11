@@ -1,10 +1,9 @@
 FROM python:3.10-slim
 
-# Install system dependencies, now including tesseract-ocr
+# Install system dependencies, Tesseract is no longer needed.
 RUN apt-get update && apt-get install -y \
     build-essential \
     libgl1-mesa-glx \
-    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
