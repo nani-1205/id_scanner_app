@@ -3,10 +3,12 @@ psycopg2-binary==2.9.9
 requests==2.31.0
 opencv-python-headless==4.8.1.78
 numpy==1.26.2
-gunicorn==2.1.2.0
 python-dotenv==1.0.0
 celery==5.3.6
 redis==5.0.1
 paddlepaddle
 paddleocr
 Pillow==10.1.0
+# <<< THE FIX IS HERE >>>
+# We remove the strict version pin to let pip resolve the best compatible version.
+gunicorn
