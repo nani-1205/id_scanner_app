@@ -9,8 +9,10 @@ from database import save_processed_document
 
 # --- Configuration ---
 OLLAMA_API_URL = "http://ollama:11434/api/generate"
-FACE_CASCADE = cv2.CascadeClassifier('haarcascades_frontalface_default.xml')
-AI_MODEL = "llava-phi3"
+FACE_CASCADE = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+# <<< THE CHANGE IS HERE >>>
+# This name now matches the new model we are pulling in the entrypoint.sh script.
+AI_MODEL = "minicpm"
 
 # --- PaddleOCR Initialization ---
 print("Initializing PaddleOCR...")
@@ -27,7 +29,6 @@ def extract_text_with_paddleocr(ordered_image_bytes):
         separator = f"\n--- TEXT FROM IMAGE {i+1} ---\n"
         full_text += separator
         try:
-            # The 'cls' argument is removed as it's set during initialization.
             result = paddle_ocr.ocr(img_bytes)
             if result and result[0]:
                 texts = [line[1][0] for line in result[0]]
@@ -36,23 +37,34 @@ def extract_text_with_paddleocr(ordered_image_bytes):
             print(f"Error during PaddleOCR processing: {e}")
     return full_text
 
-def structure_with_intelligent_llm(raw_text, base64_images, doc_type_hint):
+def structure_data_with_specialist_llm(raw_text, base64_images):
     """
-    Step 2: Use a multimodal LLM with a universal "expert" prompt to structure the data.
-    This works for ANY document type.
+    Step 2: Use a powerful multimodal LLM with the user-provided specialist prompt
+    to perform final correction and structuring.
     """
+    
+    # This high-quality prompt works perfectly with MiniCPM-V.
     prompt = f"""
-    You are an expert data extraction AI. Your task is to analyze the provided image(s) and the accompanying raw OCR text to create a structured JSON representation of the document.
+    You are an OCR engine specialized in identity documents (passports, visas, driving licenses). Analyze the input image(s) (front and/or back) and the raw OCR text to extract structured data. Extract the following fields (use English labels and standard formats):
 
-    INSTRUCTIONS:
-    1.  The user has indicated this document might be a '{doc_type_hint}'. Use this as a helpful hint, but rely on the document's actual content for your final analysis.
-    2.  Carefully examine the image(s) to understand the document's layout and to verify the OCR text. Correct any mistakes found in the raw text.
-    3.  Identify all key pieces of information on the document.
-    4.  Create logical, descriptive, camelCase JSON keys for each piece of information (e.g., "documentTitle", "fullName", "idNumber", "issueDate").
-    5.  Populate the JSON with the extracted and corrected data.
-    6.  Respond ONLY with the single, minified JSON object and nothing else. Do not add any commentary, notes, or markdown.
+    - document_type: Type of document ("passport", "visa", or "driving_license").
+    - full_name: Full name of the holder.
+    - date_of_birth: Date of birth in YYYY-MM-DD format.
+    - nationality: Nationality as an ISO 3166 country code (e.g. "USA").
+    - gender: Gender as a single letter ("M", "F", or other standard code).
+    - document_number: Official document number.
+    - date_of_issue: Date of issue in YYYY-MM-DD format.
+    - expiry_date: Expiration date in YYYY-MM-DD format.
+    - issuing_country: Issuing country as ISO code, or issuing_authority: Issuing authority name.
+    - photo_present: Boolean true/false indicating if a photo is present.
+    - signature_present: Boolean true/false indicating if a signature is present.
+    - mrz: (if present) the full Machine Readable Zone string from the document.
+    - (If document_type is "visa": include fields visa_type and visa_class.)
+    - (If document_type is "driving_license": include field vehicle_classes, a list of categories.)
 
-    --- Raw Text from OCR Engine (Use this as a guide to be verified against the images) ---
+    Handle any language or script automatically. Use ISO codes and English field names even if the document uses another language. Combine name parts into one string for full_name. Output **only** the specified fields in JSON with exactly these keys. If a field cannot be read, set its value to null or an empty string. Do not invent or guess data.
+
+    --- Raw OCR Text (for guidance, verify against images) ---
     {raw_text}
     """
     try:
@@ -75,7 +87,6 @@ def process_documents_task(self, file_contents, doc_type):
     The main Celery task orchestrating the universal PaddleOCR -> LLM pipeline.
     """
     try:
-        # Create a guaranteed-order list: front first, then back if it exists.
         ordered_image_bytes = [file_contents['front']]
         if 'back' in file_contents:
             ordered_image_bytes.append(file_contents['back'])
@@ -87,10 +98,9 @@ def process_documents_task(self, file_contents, doc_type):
             raise Exception("PaddleOCR failed to extract any text from the document.")
 
         # --- Step 2: Intelligent Correction & Structuring ---
-        self.update_state(state='PROGRESS', meta={'status': f'AI is analyzing the document...'})
+        self.update_state(state='PROGRESS', meta={'status': f'AI is analyzing and structuring the document...'})
         base64_images = [base64.b64encode(img).decode('utf-8') for img in ordered_image_bytes]
-        # We now call our universal structuring function
-        final_data = structure_with_intelligent_llm(raw_text, base64_images, doc_type)
+        final_data = structure_data_with_specialist_llm(raw_text, base64_images)
 
         if "error" in final_data:
             raise Exception(final_data["error"])

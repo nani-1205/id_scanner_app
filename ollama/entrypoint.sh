@@ -12,10 +12,13 @@ done
 echo "Ollama server is up and ready to accept commands."
 
 # --- PULL THE REQUIRED VISION MODEL ---
-REQUIRED_MODEL="llava-phi3"
+# <<< THE CHANGE IS HERE >>>
+# We are now using the state-of-the-art MiniCPM-V 2.6 model.
+REQUIRED_MODEL="minicpm"
 
 if ! ollama list | grep -q "$REQUIRED_MODEL"; then
     echo "'$REQUIRED_MODEL' model not found. Pulling directly with Ollama..."
+    # This is the native, correct way to download the model.
     ollama pull "$REQUIRED_MODEL"
     if [ $? -ne 0 ]; then
         echo "ERROR: 'ollama pull' command failed. Please check the model name and network connection."
