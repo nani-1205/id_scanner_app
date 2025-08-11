@@ -4,7 +4,6 @@
 pid=$!
 
 # Wait for the server to be ready by using its own CLI tool.
-# This is the most reliable way to check if the API is fully operational.
 echo "Waiting for Ollama server to be fully ready..."
 while ! ollama list > /dev/null 2>&1; do
     echo -n "."
@@ -13,7 +12,9 @@ done
 echo "Ollama server is up and ready to accept commands."
 
 # --- PULL THE REQUIRED VISION MODEL ---
-REQUIRED_MODEL="phi3:vision"
+# <<< THE FIX IS HERE >>>
+# The correct tag uses a hyphen, not a colon.
+REQUIRED_MODEL="phi3-vision"
 
 if ! ollama list | grep -q "$REQUIRED_MODEL"; then
     echo "'$REQUIRED_MODEL' model not found. Pulling..."
