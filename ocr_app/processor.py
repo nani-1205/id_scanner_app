@@ -14,10 +14,56 @@ OLLAMA_API_URL = "http://ollama:11434/api/generate"
 FACE_CASCADE = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
 LANGUAGE_MODEL = "llama3"
 
+# --- PROMPT TEMPLATE REPOSITORY ---
+# This is the core of our adaptable engine. We define specialized prompts for each document.
+DOCUMENT_PROMPTS = {
+    "driving license": """
+    You are an expert data extraction assistant. The user has provided raw text from a Philippine Driver's License.
+    Your task is to parse this text and populate the following JSON structure.
+    Fill every field with the corresponding data from the text.
+    If data for a field is not present in the text, leave the value as an empty string "".
+    Do NOT add any commentary or notes. Respond ONLY with the JSON object.
+
+    JSON Structure:
+    {{
+      "lastName": "", "firstName": "", "middleName": "", "nationality": "", "sex": "",
+      "dateOfBirth": "YYYY/MM/DD", "weightKg": "", "heightM": "", "address": "",
+      "licenseNo": "", "expirationDate": "YYYY/MM/DD", "agencyCode": "",
+      "bloodType": "", "eyesColor": "", "dlCodes": "", "conditions": "", "serialNumber": ""
+    }}
+
+    --- Raw Text from OCR ---
+    {raw_text}
+    """,
+    "passport": """
+    You are an expert data extraction assistant. The user has provided raw text from a Passport.
+    Your task is to parse this text and populate the following JSON structure.
+    Fill every field with the corresponding data from the text.
+    If data for a field is not present in the text, leave the value as an empty string "".
+    Do NOT add any commentary or notes. Respond ONLY with the JSON object.
+
+    JSON Structure:
+    {{
+      "type": "", "issuingCountryCode": "", "passportNo": "", "surname": "", "givenNames": "",
+      "nationality": "", "dateOfBirth": "YYYY-MM-DD", "sex": "", "placeOfBirth": "",
+      "dateOfIssue": "YYYY-MM-DD", "dateOfExpiry": "YYYY-MM-DD", "issuingAuthority": ""
+    }}
+
+    --- Raw Text from OCR ---
+    {raw_text}
+    """,
+    "fallback": """
+    You are a general-purpose data extraction assistant. The user has provided raw text from an unknown document.
+    Analyze the text and identify all key-value pairs you can find (e.g., "Name": "John Doe", "ID Number": "12345").
+    Return the result as a single, minified JSON object. Do NOT add any commentary or notes.
+
+    --- Raw Text from OCR ---
+    {raw_text}
+    """
+}
+
 def extract_raw_text_with_tesseract(image_bytes_list):
-    """
-    Step 1: Use Tesseract to extract all text from images.
-    """
+    """Step 1: Use Tesseract for high-accuracy OCR."""
     full_text = ""
     for image_bytes in image_bytes_list:
         try:
@@ -28,56 +74,41 @@ def extract_raw_text_with_tesseract(image_bytes_list):
             print(f"Error during Tesseract OCR: {e}")
     return full_text
 
-def structure_text_with_llama3(raw_text, doc_type):
-    """
-    Step 2: Use a powerful language model (Llama 3) to structure the raw text.
-    """
-    # <<< THE FIX IS HERE >>>
-    # We make the comparison robust by removing whitespace and converting to lowercase.
-    if doc_type.strip().lower() != "driving license":
-        return {"error": f"Document type '{doc_type}' is not yet supported by the structuring engine."}
-    
+def classify_document_with_llama3(raw_text):
+    """Step 2: Use Llama3 to identify the type of document."""
     prompt = f"""
-    You are an expert data extraction assistant. Below is raw text extracted from a Philippine Driver's License.
-    Your task is to parse this text and populate the following JSON structure.
-    Fill every field with the corresponding data from the text.
-    If data for a field is not present in the text, leave the value as an empty string "".
-    Do NOT add any commentary, notes, or markdown. Respond ONLY with the JSON object.
+    Analyze the following text extracted from a document.
+    What type of document is this?
+    Please respond with ONLY one of the following choices: "Driving License", "Passport", "Other".
 
-    JSON Structure to populate:
-    {{
-      "lastName": "",
-      "firstName": "",
-      "middleName": "",
-      "nationality": "",
-      "sex": "",
-      "dateOfBirth": "YYYY/MM/DD",
-      "weightKg": "",
-      "heightM": "",
-      "address": "",
-      "licenseNo": "",
-      "expirationDate": "YYYY/MM/DD",
-      "agencyCode": "",
-      "bloodType": "",
-      "eyesColor": "",
-      "dlCodes": "",
-      "conditions": "",
-      "serialNumber": ""
-    }}
-
-    --- Raw Text from OCR ---
+    --- Text from Document ---
     {raw_text}
     """
+    try:
+        response = requests.post(
+            OLLAMA_API_URL,
+            json={"model": LANGUAGE_MODEL, "prompt": prompt, "stream": False},
+            timeout=60
+        )
+        response.raise_for_status()
+        # Clean the response to get only the classification
+        classification = response.json().get('response', 'Other').strip().lower().replace('"', '')
+        return classification
+    except Exception as e:
+        print(f"Error during document classification: {e}")
+        return "other" # Default to 'other' on failure
+
+def structure_text_with_llama3(raw_text, doc_type):
+    """Step 3: Select the correct specialized prompt and structure the data."""
+    
+    # Select the prompt based on the classification result. Default to fallback.
+    prompt_template = DOCUMENT_PROMPTS.get(doc_type, DOCUMENT_PROMPTS["fallback"])
+    final_prompt = prompt_template.format(raw_text=raw_text)
     
     try:
         response = requests.post(
             OLLAMA_API_URL,
-            json={
-                "model": LANGUAGE_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "format": "json"
-            },
+            json={"model": LANGUAGE_MODEL, "prompt": final_prompt, "stream": False, "format": "json"},
             timeout=180
         )
         response.raise_for_status()
@@ -88,34 +119,38 @@ def structure_text_with_llama3(raw_text, doc_type):
         return {"error": f"The language model failed to structure the text. Error: {e}"}
 
 @shared_task(bind=True)
-def process_documents_task(self, file_contents, doc_type):
-    """Celery task using the Tesseract + Llama 3 pipeline."""
+def process_documents_task(self, file_contents, user_selected_doc_type):
+    """The main Celery task orchestrating the advanced OCR pipeline."""
     try:
-        # Added for debugging to see exactly what the worker receives
-        print(f"DEBUG: Celery worker received doc_type: '{doc_type}'")
-
         image_bytes_list = list(file_contents.values())
         
-        self.update_state(state='PROGRESS', meta={'status': 'Performing high-accuracy OCR with Tesseract...'})
+        # --- Step 1: High-Accuracy OCR ---
+        self.update_state(state='PROGRESS', meta={'status': 'Performing high-accuracy OCR...'})
         raw_text = extract_raw_text_with_tesseract(image_bytes_list)
         if not raw_text.strip():
-            raise Exception("Tesseract failed to extract any text from the document.")
+            raise Exception("OCR engine failed to extract any text from the document.")
 
-        self.update_state(state='PROGRESS', meta={'status': f'Structuring text with {LANGUAGE_MODEL} model...'})
-        final_data = structure_text_with_llama3(raw_text, doc_type)
+        # --- Step 2: AI-Powered Classification ---
+        self.update_state(state='PROGRESS', meta={'status': 'AI is identifying the document type...'})
+        identified_type = classify_document_with_llama3(raw_text)
+        
+        # --- Step 3: Specialized, AI-Powered Structuring ---
+        self.update_state(state='PROGRESS', meta={'status': f'AI identified a "{identified_type}". Extracting structured data...'})
+        final_data = structure_text_with_llama3(raw_text, identified_type)
         if "error" in final_data:
             raise Exception(final_data["error"])
 
+        # --- Final Steps ---
         self.update_state(state='PROGRESS', meta={'status': 'Detecting faces...'})
         face_image_bytes = detect_and_crop_face(image_bytes_list)
         
         self.update_state(state='PROGRESS', meta={'status': 'Saving to database...'})
+        # We save with the type the user selected, but the data is from the AI's identified type
         json_data = json.dumps(final_data)
-        doc_id = save_processed_document(doc_type, json_data, image_bytes_list, face_image_bytes)
+        doc_id = save_processed_document(user_selected_doc_type, json_data, image_bytes_list, face_image_bytes)
 
         return {'status': 'Task Complete!', 'result': doc_id}
     except Exception as e:
-        # This is now the correct way to handle failures
         raise e
 
 def detect_and_crop_face(image_bytes_list):
