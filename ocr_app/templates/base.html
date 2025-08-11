@@ -9,6 +9,11 @@
 <body>
     <header>
         <h1>Offline Document OCR with AI</h1>
+        <nav>
+            <a href="{{ url_for('index') }}">Home</a>
+            <a href="{{ url_for('history') }}">History</a>
+            <a href="{{ url_for('swagger_ui.index') }}">API Docs</a>
+        </nav>
     </header>
     <main class="container">
         {% with messages = get_flashed_messages(with_categories=true) %}

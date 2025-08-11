@@ -9,6 +9,7 @@ redis==5.0.1
 paddlepaddle
 paddleocr
 Pillow==10.1.0
-# <<< THE FIX IS HERE >>>
-# We remove the strict version pin to let pip resolve the best compatible version.
 gunicorn
+# New libraries
+PyMuPDF==1.24.1
+Flask-Swagger-UI==24.3

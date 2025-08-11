@@ -7,13 +7,15 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - app
+      # Nginx now depends on both app instances
+      - app-1
+      - app-2
     networks:
       - ocr_network
 
-  app:
+  # We now have two instances of our Flask app
+  app-1: &app_base
     build: ./ocr_app
-    container_name: ocr_flask_app
     restart: always
     expose:
       - "5000"
@@ -31,20 +33,27 @@ services:
     networks:
       - ocr_network
 
-  celery_worker:
+  app-2:
+    <<: *app_base # This inherits all properties from app_base
+
+  # We also scale our background workers for higher throughput
+  celery_worker-1: &celery_base
     build: ./ocr_app
-    container_name: ocr_celery_worker
     restart: always
     command: ["celery", "-A", "app.celery", "worker", "--loglevel=info"]
     env_file:
       - .env
     depends_on:
-      - app
+      - app-1
+      - app-2
       - redis
     volumes:
       - ./ocr_app:/app
     networks:
       - ocr_network
+
+  celery_worker-2:
+    <<: *celery_base
 
   redis:
     image: "redis:alpine"
