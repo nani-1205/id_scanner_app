@@ -45,7 +45,7 @@ services:
       retries: 5
 
   ollama:
-    image: ollama/ollama
+    build: ./ollama
     container_name: ocr_ollama
     ports:
       - "11434:11434"
@@ -53,9 +53,6 @@ services:
       - ollama_data:/root/.ollama
     networks:
       - ocr_network
-    # This command will run on first start to pull the model automatically
-    entrypoint: /bin/sh -c "ollama serve & ollama pull llava; wait"
-
 
 volumes:
   postgres_data:

@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 from database import init_db, save_processed_document, get_processed_document
 from processor import process_documents
 
-# Load environment variables from .env file
 load_dotenv()
 
 app = Flask(__name__)
@@ -14,10 +13,6 @@ app.secret_key = os.urandom(24)
 
 @app.before_request
 def setup():
-    # This hook can be used to initialize things before the first request
-    # but it's better to run init_db from a startup script.
-    # For simplicity, we check on each request if the table exists.
-    # A more robust solution would be a separate init script.
     if not hasattr(app, 'db_initialized'):
         init_db()
         app.db_initialized = True
@@ -36,13 +31,11 @@ def index():
             extracted_data, face_image, original_images = process_documents(files, doc_type)
             
             if extracted_data is None:
-                flash(face_image) # face_image contains error message in this case
+                flash(face_image) # Contains error message in this case
                 return redirect(request.url)
             
-            # Convert data for storage
             json_data = json.dumps(extracted_data)
             
-            # Save to DB
             doc_id = save_processed_document(doc_type, json_data, original_images, face_image)
             
             flash('Document processed successfully!', 'success')
@@ -54,14 +47,12 @@ def index():
 
     return render_template('index.html')
 
-
 @app.route('/results/<int:doc_id>')
 def results(doc_id):
     document = get_processed_document(doc_id)
     if not document:
         return "Document not found", 404
 
-    # Prepare data for rendering
     extracted_data = json.dumps(document['extracted_data'], indent=2)
     face_image_b64 = None
     if document['face_image']:
