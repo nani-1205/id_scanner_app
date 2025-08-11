@@ -13,6 +13,8 @@ FACE_CASCADE = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
 AI_MODEL = "llava-phi3"
 
 # --- PaddleOCR Initialization ---
+# This is a heavy object, so we initialize it once globally when the worker starts.
+# It will download its own models on the first run.
 print("Initializing PaddleOCR...")
 paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en')
 print("PaddleOCR Initialized.")
@@ -22,9 +24,7 @@ def extract_text_with_paddleocr(ordered_image_bytes):
     Step 1: Use PaddleOCR for high-accuracy raw text extraction from an ordered list of images.
     """
     full_text = ""
-    # The list is guaranteed to have the front image at index 0 and back at index 1 (if it exists)
     for i, img_bytes in enumerate(ordered_image_bytes):
-        # Add a separator to give the LLM context about the image source
         separator = f"\n--- FRONT IMAGE TEXT ---\n" if i == 0 else f"\n--- BACK IMAGE TEXT ---\n"
         full_text += separator
         try:
@@ -78,7 +78,6 @@ def structure_with_corrective_llm(raw_text, base64_images, doc_type):
 def process_documents_task(self, file_contents, doc_type):
     """Celery task using the advanced PaddleOCR -> LLM pipeline with ordered images."""
     try:
-        # Create a guaranteed-order list: front first, then back if it exists.
         ordered_image_bytes = [file_contents['front']]
         if 'back' in file_contents:
             ordered_image_bytes.append(file_contents['back'])
@@ -99,7 +98,6 @@ def process_documents_task(self, file_contents, doc_type):
 
         # --- Final Steps ---
         self.update_state(state='PROGRESS', meta={'status': 'Detecting faces...'})
-        # Pass all available images for face detection
         face_image_bytes = detect_and_crop_face(list(file_contents.values()))
         
         self.update_state(state='PROGRESS', meta={'status': 'Saving to database...'})
