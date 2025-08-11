@@ -9,15 +9,14 @@ from database import save_processed_document
 
 # --- Configuration ---
 OLLAMA_API_URL = "http://ollama:11434/api/generate"
-FACE_CASCADE = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+FACE_CASCADE = cv2.CascadeClassifier('haarcascades_frontalface_default.xml')
 AI_MODEL = "llava-phi3"
 
 # --- PaddleOCR Initialization ---
-# This is a heavy object, so we initialize it once globally when the worker starts.
-# It will download its own models on the first run.
 print("Initializing PaddleOCR...")
 paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en')
 print("PaddleOCR Initialized.")
+
 
 def extract_text_with_paddleocr(ordered_image_bytes):
     """
@@ -25,10 +24,11 @@ def extract_text_with_paddleocr(ordered_image_bytes):
     """
     full_text = ""
     for i, img_bytes in enumerate(ordered_image_bytes):
-        separator = f"\n--- FRONT IMAGE TEXT ---\n" if i == 0 else f"\n--- BACK IMAGE TEXT ---\n"
+        separator = f"\n--- TEXT FROM IMAGE {i+1} ---\n"
         full_text += separator
         try:
-            result = paddle_ocr.ocr(img_bytes, cls=True)
+            # The 'cls' argument is removed as it's set during initialization.
+            result = paddle_ocr.ocr(img_bytes)
             if result and result[0]:
                 texts = [line[1][0] for line in result[0]]
                 full_text += "\n".join(texts)
@@ -36,29 +36,23 @@ def extract_text_with_paddleocr(ordered_image_bytes):
             print(f"Error during PaddleOCR processing: {e}")
     return full_text
 
-def structure_with_corrective_llm(raw_text, base64_images, doc_type):
+def structure_with_intelligent_llm(raw_text, base64_images, doc_type_hint):
     """
-    Step 2: Use a multimodal LLM to correct and structure the text from PaddleOCR.
+    Step 2: Use a multimodal LLM with a universal "expert" prompt to structure the data.
+    This works for ANY document type.
     """
-    if doc_type != "Driving License":
-        return {"error": "This document type is not yet supported by the corrective AI engine."}
-
     prompt = f"""
-    You are an AI data verification expert. I have provided you with images of a Philippine Driver's License and the raw text extracted by an OCR engine. The text is separated into 'FRONT IMAGE TEXT' and 'BACK IMAGE TEXT'.
-    Your task is to use BOTH the images and the raw text to accurately populate the following JSON structure.
-    Use the images to verify and correct any OCR mistakes. For example, the Serial Number is on the back.
+    You are an expert data extraction AI. Your task is to analyze the provided image(s) and the accompanying raw OCR text to create a structured JSON representation of the document.
 
-    Respond ONLY with the single, minified JSON object and nothing else.
+    INSTRUCTIONS:
+    1.  The user has indicated this document might be a '{doc_type_hint}'. Use this as a helpful hint, but rely on the document's actual content for your final analysis.
+    2.  Carefully examine the image(s) to understand the document's layout and to verify the OCR text. Correct any mistakes found in the raw text.
+    3.  Identify all key pieces of information on the document.
+    4.  Create logical, descriptive, camelCase JSON keys for each piece of information (e.g., "documentTitle", "fullName", "idNumber", "issueDate").
+    5.  Populate the JSON with the extracted and corrected data.
+    6.  Respond ONLY with the single, minified JSON object and nothing else. Do not add any commentary, notes, or markdown.
 
-    JSON Structure to populate:
-    {{
-      "lastName": "", "firstName": "", "middleName": "", "nationality": "", "sex": "",
-      "dateOfBirth": "YYYY/MM/DD", "weightKg": "", "heightM": "", "address": "",
-      "licenseNo": "", "expirationDate": "YYYY/MM/DD", "agencyCode": "",
-      "bloodType": "", "eyesColor": "", "dlCodes": "", "conditions": "", "serialNumber": ""
-    }}
-
-    --- Raw Text from OCR Engine (Use this as a guide) ---
+    --- Raw Text from OCR Engine (Use this as a guide to be verified against the images) ---
     {raw_text}
     """
     try:
@@ -74,10 +68,14 @@ def structure_with_corrective_llm(raw_text, base64_images, doc_type):
         print(f"Error during LLM structuring: {e}")
         return {"error": f"The language model failed to structure the text. Error: {e}"}
 
+
 @shared_task(bind=True)
 def process_documents_task(self, file_contents, doc_type):
-    """Celery task using the advanced PaddleOCR -> LLM pipeline with ordered images."""
+    """
+    The main Celery task orchestrating the universal PaddleOCR -> LLM pipeline.
+    """
     try:
+        # Create a guaranteed-order list: front first, then back if it exists.
         ordered_image_bytes = [file_contents['front']]
         if 'back' in file_contents:
             ordered_image_bytes.append(file_contents['back'])
@@ -88,10 +86,11 @@ def process_documents_task(self, file_contents, doc_type):
         if not raw_text.strip():
             raise Exception("PaddleOCR failed to extract any text from the document.")
 
-        # --- Step 2: Intelligent Correction ---
-        self.update_state(state='PROGRESS', meta={'status': f'AI is correcting and structuring data...'})
+        # --- Step 2: Intelligent Correction & Structuring ---
+        self.update_state(state='PROGRESS', meta={'status': f'AI is analyzing the document...'})
         base64_images = [base64.b64encode(img).decode('utf-8') for img in ordered_image_bytes]
-        final_data = structure_with_corrective_llm(raw_text, base64_images, doc_type)
+        # We now call our universal structuring function
+        final_data = structure_with_intelligent_llm(raw_text, base64_images, doc_type)
 
         if "error" in final_data:
             raise Exception(final_data["error"])
