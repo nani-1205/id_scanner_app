@@ -1,0 +1,12 @@
+# This instruction tells Ollama to start with a raw GGUF model file.
+# We will download this file in our entrypoint script.
+# We are using the Q4_K_M quantization for a good balance of size and performance.
+FROM ./Phi-3-vision-128k-instruct-Q4_K_M.gguf
+
+# This template tells the model how to interpret the prompt and where to place the image data.
+# It is crucial for vision models to work correctly.
+TEMPLATE """<|user|>
+<|image|>
+{{ .Prompt }}<|end|>
+<|assistant|>
+"""

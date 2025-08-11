@@ -10,16 +10,15 @@ from database import save_processed_document
 # --- Configuration ---
 OLLAMA_API_URL = "http://ollama:11434/api/generate"
 FACE_CASCADE = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
-# <<< THE FIX IS HERE >>>
-# Correcting the model name to match the entrypoint script.
+# This name matches the model we are creating in the new entrypoint.sh
 AI_MODEL = "phi3-vision"
 
-# ... (The rest of the file remains exactly the same as the previous version) ...
 def get_extraction_prompt(doc_type):
     """
     Selects a highly-structured, specialized prompt based on the document type.
     This guides the vision model to provide accurate, structured JSON output directly.
     """
+    # --- PROMPT FOR PHILIPPINE DRIVER'S LICENSE ---
     if doc_type == "Driving License":
         return """
         Analyze the provided front and back images of a Philippine Driver's License.
@@ -47,6 +46,7 @@ def get_extraction_prompt(doc_type):
           "serialNumber": ""
         }
         """
+    # --- PROMPT FOR A STANDARD PASSPORT ---
     elif doc_type == "Passport":
         return """
         Analyze the provided image of a passport's biographical data page.
@@ -60,6 +60,7 @@ def get_extraction_prompt(doc_type):
           "dateOfIssue": "YYYY-MM-DD", "dateOfExpiry": "YYYY-MM-DD", "issuingAuthority": ""
         }
         """
+    # --- FALLBACK FOR ANY OTHER DOCUMENT ---
     else:
         return f"""
         Analyze the provided image of a '{doc_type}'.
@@ -74,9 +75,11 @@ def process_documents_task(self, file_contents, doc_type):
         image_bytes_list = list(file_contents.values())
         base64_images = [base64.b64encode(img).decode('utf-8') for img in image_bytes_list]
 
+        # --- Step 1: Select the right prompt for the job ---
         self.update_state(state='PROGRESS', meta={'status': 'Preparing specialized AI prompt...'})
         prompt = get_extraction_prompt(doc_type)
 
+        # --- Step 2: Call the Vision Model ---
         self.update_state(state='PROGRESS', meta={'status': f'Analyzing document with {AI_MODEL}...'})
         
         response = requests.post(
@@ -86,7 +89,7 @@ def process_documents_task(self, file_contents, doc_type):
                 "prompt": prompt,
                 "images": base64_images,
                 "stream": False,
-                "format": "json"
+                "format": "json"  # Ask the model to guarantee a JSON output
             },
             timeout=180
         )
@@ -96,6 +99,7 @@ def process_documents_task(self, file_contents, doc_type):
         if not final_data:
              raise Exception("AI model returned an empty result. The document may be unclear.")
 
+        # --- Final Steps ---
         self.update_state(state='PROGRESS', meta={'status': 'Detecting faces...'})
         face_image_bytes = detect_and_crop_face(image_bytes_list)
         
