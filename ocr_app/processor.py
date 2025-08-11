@@ -16,7 +16,7 @@ LANGUAGE_MODEL = "llama3"
 
 def extract_raw_text_with_tesseract(image_bytes_list):
     """
-    Step 1: Use Tesseract (a specialized OCR engine) to extract all text from images.
+    Step 1: Use Tesseract to extract all text from images.
     """
     full_text = ""
     for image_bytes in image_bytes_list:
@@ -32,8 +32,10 @@ def structure_text_with_llama3(raw_text, doc_type):
     """
     Step 2: Use a powerful language model (Llama 3) to structure the raw text.
     """
-    if doc_type != "Driving License":
-        return {"error": "This document type is not yet supported by the structuring engine."}
+    # <<< THE FIX IS HERE >>>
+    # We make the comparison robust by removing whitespace and converting to lowercase.
+    if doc_type.strip().lower() != "driving license":
+        return {"error": f"Document type '{doc_type}' is not yet supported by the structuring engine."}
     
     prompt = f"""
     You are an expert data extraction assistant. Below is raw text extracted from a Philippine Driver's License.
@@ -89,6 +91,9 @@ def structure_text_with_llama3(raw_text, doc_type):
 def process_documents_task(self, file_contents, doc_type):
     """Celery task using the Tesseract + Llama 3 pipeline."""
     try:
+        # Added for debugging to see exactly what the worker receives
+        print(f"DEBUG: Celery worker received doc_type: '{doc_type}'")
+
         image_bytes_list = list(file_contents.values())
         
         self.update_state(state='PROGRESS', meta={'status': 'Performing high-accuracy OCR with Tesseract...'})
@@ -110,9 +115,7 @@ def process_documents_task(self, file_contents, doc_type):
 
         return {'status': 'Task Complete!', 'result': doc_id}
     except Exception as e:
-        # <<< THE FIX IS HERE >>>
-        # The incorrect `self.update_state` line has been removed.
-        # Now, we just re-raise the exception and let Celery handle it properly.
+        # This is now the correct way to handle failures
         raise e
 
 def detect_and_crop_face(image_bytes_list):
