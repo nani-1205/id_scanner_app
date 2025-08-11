@@ -35,13 +35,32 @@ celery = make_celery(app)
 
 # --- Swagger UI API Documentation ---
 SWAGGER_URL = '/api/docs'
-API_URL = '/static/swagger.json'
+# <<< THE FIX IS HERE (Part 1) >>>
+# We now point to a dynamic Flask route instead of a static file.
+API_URL = '/api/spec' 
+
 swaggerui_blueprint = get_swaggerui_blueprint(
     SWAGGER_URL,
     API_URL,
     config={'app_name': "OCR AI API"}
 )
 app.register_blueprint(swaggerui_blueprint)
+
+# <<< THE FIX IS HERE (Part 2) >>>
+# This new route dynamically serves the swagger.json file and adds the correct host.
+@app.route('/api/spec')
+def api_spec():
+    """Dynamically serves the swagger.json file."""
+    with open(os.path.join(app.static_folder, 'swagger.json')) as f:
+        swagger_spec = json.load(f)
+    
+    # Inject the correct host and scheme to make the API docs fully functional
+    swagger_spec['host'] = request.host
+    swagger_spec['schemes'] = [request.scheme]
+    swagger_spec['basePath'] = "/"
+    
+    return jsonify(swagger_spec)
+
 
 @app.before_request
 def setup():
@@ -103,7 +122,7 @@ def history():
                            per_page=per_page,
                            last_page=last_page)
 
-# --- TASK STATUS & RESULTS PAGES (Unchanged but included for completeness) ---
+# --- TASK STATUS & RESULTS PAGES ---
 @app.route('/processing/<task_id>')
 def processing_page(task_id):
     return render_template('processing.html', task_id=task_id)
