@@ -19,12 +19,16 @@ services:
       - "5000"
     env_file:
       - .env
+    # <<< CORRECTED BLOCK >>>
+    # This block is now a consistent dictionary format, not a mixed list/dictionary.
     depends_on:
-      - redis
+      redis:
+        condition: service_started
       db:
         condition: service_healthy
       ollama:
         condition: service_started
+    # <<< END OF CORRECTION >>>
     volumes:
       - ./ocr_app:/app
     networks:
