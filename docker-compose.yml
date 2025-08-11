@@ -20,12 +20,34 @@ services:
     env_file:
       - .env
     depends_on:
+      - redis
       db:
         condition: service_healthy
       ollama:
         condition: service_started
     volumes:
       - ./ocr_app:/app
+    networks:
+      - ocr_network
+
+  celery_worker:
+    build: ./ocr_app
+    container_name: ocr_celery_worker
+    restart: always
+    command: ["celery", "-A", "app.celery", "worker", "--loglevel=info"]
+    env_file:
+      - .env
+    depends_on:
+      - app
+      - redis
+    volumes:
+      - ./ocr_app:/app
+    networks:
+      - ocr_network
+
+  redis:
+    image: "redis:alpine"
+    container_name: ocr_redis
     networks:
       - ocr_network
 
