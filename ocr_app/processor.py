@@ -15,29 +15,44 @@ from datetime import datetime
 OLLAMA_API_URL = "http://ollama:11434/api/generate"
 FACE_CASCADE = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
 AI_MODEL = "minicpm-v:8b"
-OCR_CONFIDENCE_THRESHOLD = 0.80
+OCR_CONFIDENCE_THRESHOLD = 0.80 # Ignore any text PaddleOCR is less than 80% sure about.
 
 # --- PaddleOCR Initialization ---
+# This is a heavy object, initialized once when the Celery worker process starts.
+# It will download its own models on the first run, which may take time.
 print("Initializing PaddleOCR...")
 paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en')
 print("PaddleOCR Initialized.")
 
 def preprocess_image_for_ocr(image_bytes):
-    """Applies advanced computer vision techniques to clean and enhance the image."""
+    """
+    Applies advanced computer vision techniques to clean and enhance the image
+    before sending it to the OCR engine for better accuracy.
+    """
     try:
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        # 1. Convert to Grayscale for better contrast analysis
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # 2. Increase Contrast (CLAHE: Contrast Limited Adaptive Histogram Equalization)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced_contrast = clahe.apply(gray)
+        
+        # 3. Deskew (straighten the image) to help the OCR engine
         coords = np.column_stack(np.where(enhanced_contrast > 0))
         angle = cv2.minAreaRect(coords)[-1]
-        if angle < -45: angle = -(90 + angle)
-        else: angle = -angle
+        if angle < -45:
+            angle = -(90 + angle)
+        else:
+            angle = -angle
         (h, w) = enhanced_contrast.shape[:2]
         center = (w // 2, h // 2)
         M = cv2.getRotationMatrix2D(center, angle, 1.0)
         deskewed = cv2.warpAffine(enhanced_contrast, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        
+        # 4. Convert the processed image back to bytes for PaddleOCR
         _, buffer = cv2.imencode('.png', deskewed)
         return buffer.tobytes()
     except Exception as e:
@@ -45,7 +60,9 @@ def preprocess_image_for_ocr(image_bytes):
         return image_bytes
 
 def extract_text_with_paddleocr(ordered_image_bytes):
-    """Step 1: Use PaddleOCR with pre-processing and confidence filtering."""
+    """
+    Step 1: Use PaddleOCR with pre-processing and confidence filtering.
+    """
     full_text = ""
     for i, img_bytes in enumerate(ordered_image_bytes):
         separator = f"\n--- TEXT FROM PAGE/IMAGE {i+1} ---\n"
@@ -67,7 +84,6 @@ def structure_data_with_master_prompt(raw_text, base64_images):
     Step 2: Uses the ultimate "Multi-Template" prompt to let the AI choose the
     best structure for the document it identifies.
     """
-    # <<< THE CHANGE IS HERE: Added "address" to Emirates ID and Generic templates >>>
     prompt = f"""
     You are a world-class data extraction expert. Your task is to analyze the provided document image(s) and raw OCR text to create a single, perfectly structured JSON output.
 
@@ -151,15 +167,27 @@ def post_process_and_validate(data):
 def process_documents_task(self, file_contents_dict, doc_type):
     """The main Celery task orchestrating the final, high-accuracy pipeline."""
     try:
-        ordered_image_bytes = [file_contents_dict['front']]
-        if 'back' in file_contents_dict:
-            ordered_image_bytes.append(file_contents_dict['back'])
+        # This logic correctly handles the generic {'file_0': ..., 'file_1': ...} dictionary
+        # sent from the Flask app, making it robust for all upload scenarios.
+        all_image_bytes = []
+        original_images_to_save = []
+
+        # Process all uploaded files, converting PDFs to images.
+        # Sorting the keys ('file_0', 'file_1') ensures a consistent processing order.
+        for key in sorted(file_contents_dict.keys()):
+            filename, file_bytes = file_contents_dict[key]
+            original_images_to_save.append(file_bytes)
+            processed_images = process_file_input(file_bytes, filename)
+            all_image_bytes.extend(processed_images)
+
+        if not all_image_bytes:
+            raise Exception("No valid images could be processed from the provided file(s).")
             
         self.update_state(state='PROGRESS', meta={'status': 'Cleaning images & performing high-accuracy OCR...'})
-        raw_text = extract_text_with_paddleocr(ordered_image_bytes)
+        raw_text = extract_text_with_paddleocr(all_image_bytes)
         
         self.update_state(state='PROGRESS', meta={'status': 'AI is analyzing and structuring the document...'})
-        base64_images = [base64.b64encode(img).decode('utf-8') for img in ordered_image_bytes]
+        base64_images = [base64.b64encode(img).decode('utf-8') for img in all_image_bytes]
         structured_data = structure_data_with_master_prompt(raw_text, base64_images)
 
         if "error" in structured_data:
@@ -169,12 +197,11 @@ def process_documents_task(self, file_contents_dict, doc_type):
         final_data = post_process_and_validate(structured_data)
 
         self.update_state(state='PROGRESS', meta={'status': 'Detecting faces...'})
-        face_image_bytes = detect_and_crop_face(ordered_image_bytes)
+        face_image_bytes = detect_and_crop_face(all_image_bytes)
         
         self.update_state(state='PROGRESS', meta={'status': 'Saving to database...'})
         json_data = json.dumps(final_data)
-        # We save with the user-selected type, but the AI's classification is inside the JSON
-        doc_id = save_processed_document(doc_type, json_data, ordered_image_bytes, face_image_bytes)
+        doc_id = save_processed_document(doc_type, json_data, original_images_to_save, face_image_bytes)
 
         return {'status': 'Task Complete!', 'result': doc_id}
     except Exception as e:
