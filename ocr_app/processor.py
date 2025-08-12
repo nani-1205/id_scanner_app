@@ -18,51 +18,54 @@ AI_MODEL = "minicpm-v:8b"
 OCR_CONFIDENCE_THRESHOLD = 0.80 # Ignore any text PaddleOCR is less than 80% sure about.
 
 # --- PaddleOCR Initialization ---
-# This is a heavy object, initialized once when the Celery worker process starts.
-# It will download its own models on the first run, which may take time.
 print("Initializing PaddleOCR...")
 paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en')
 print("PaddleOCR Initialized.")
 
-def preprocess_image_for_ocr(image_bytes):
+# <<< CRITICAL FIX: Ensure helper functions are at the top level of the module >>>
+
+def normalize_image(image_bytes):
     """
-    Applies advanced computer vision techniques to clean and enhance the image
-    before sending it to the OCR engine for better accuracy.
+    Opens any image, converts it to a standard RGB JPEG format,
+    and returns the standardized image bytes. This prevents errors
+    from unsupported image formats like WEBP, HEIC, etc.
     """
     try:
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-        # 1. Convert to Grayscale for better contrast analysis
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        # 2. Increase Contrast (CLAHE: Contrast Limited Adaptive Histogram Equalization)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced_contrast = clahe.apply(gray)
-        
-        # 3. Deskew (straighten the image) to help the OCR engine
-        coords = np.column_stack(np.where(enhanced_contrast > 0))
-        angle = cv2.minAreaRect(coords)[-1]
-        if angle < -45:
-            angle = -(90 + angle)
-        else:
-            angle = -angle
-        (h, w) = enhanced_contrast.shape[:2]
-        center = (w // 2, h // 2)
-        M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        deskewed = cv2.warpAffine(enhanced_contrast, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-        
-        # 4. Convert the processed image back to bytes for PaddleOCR
-        _, buffer = cv2.imencode('.png', deskewed)
-        return buffer.tobytes()
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=95)
+        return buffer.getvalue()
     except Exception as e:
-        print(f"Could not preprocess image, using original. Error: {e}")
+        print(f"Error normalizing image: {e}")
+        # Fallback to original bytes if normalization fails
         return image_bytes
 
+def process_file_input(file_bytes, filename):
+    """
+    Accepts a file (image or PDF) and returns a list of standardized image bytes.
+    If the file is a PDF, it converts each page into an image.
+    """
+    images_bytes = []
+    
+    if filename.lower().endswith('.pdf'):
+        try:
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            for page in doc:
+                # Render page to a high-resolution image
+                pix = page.get_pixmap(dpi=300)
+                img_bytes = pix.tobytes("jpeg")
+                images_bytes.append(normalize_image(img_bytes))
+            doc.close()
+        except Exception as e:
+            print(f"Error processing PDF file '{filename}': {e}")
+    else:
+        # Process as a single image
+        images_bytes.append(normalize_image(file_bytes))
+        
+    return images_bytes
+
 def extract_text_with_paddleocr(ordered_image_bytes):
-    """
-    Step 1: Use PaddleOCR with pre-processing and confidence filtering.
-    """
+    """Step 1: Use PaddleOCR with pre-processing and confidence filtering."""
     full_text = ""
     for i, img_bytes in enumerate(ordered_image_bytes):
         separator = f"\n--- TEXT FROM PAGE/IMAGE {i+1} ---\n"
