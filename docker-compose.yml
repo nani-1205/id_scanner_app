@@ -8,7 +8,7 @@ services:
       - app-1
       - app-2
     networks:
-      - ocr_bridge_network
+      - ocr_network
 
   app-1: &app_base
     build: ./ocr_app
@@ -17,6 +17,11 @@ services:
       - "5000"
     env_file:
       - .env
+    # <<< THE FIX IS HERE (Part 1) >>>
+    # DNS configuration is a per-service setting.
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     depends_on:
       - redis
       - db
@@ -24,7 +29,7 @@ services:
     volumes:
       - ./ocr_app:/app
     networks:
-      - ocr_bridge_network
+      - ocr_network
 
   app-2:
     <<: *app_base
@@ -35,6 +40,10 @@ services:
     command: ["celery", "-A", "app.celery", "worker", "--loglevel=info"]
     env_file:
       - .env
+    # <<< THE FIX IS HERE (Part 2) >>>
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     depends_on:
       - app-1
       - app-2
@@ -42,7 +51,7 @@ services:
     volumes:
       - ./ocr_app:/app
     networks:
-      - ocr_bridge_network
+      - ocr_network
 
   celery_worker-2:
     <<: *celery_base
@@ -51,7 +60,7 @@ services:
     image: "redis:alpine"
     container_name: ocr_redis
     networks:
-      - ocr_bridge_network
+      - ocr_network
 
   db:
     image: postgres:15-alpine
@@ -61,7 +70,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - ocr_bridge_network
+      - ocr_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -75,19 +84,19 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    # <<< THE FIX IS HERE (Part 3) >>>
+    # Add DNS to the Ollama service as well, as it needs to pull models.
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     networks:
-      - ocr_bridge_network
+      - ocr_network
 
 volumes:
   postgres_data:
   ollama_data:
 
-# Defines our custom network with a reliable DNS server.
+# This is a simple network definition; the DNS settings have been moved to the services.
 networks:
-  ocr_bridge_network:
+  ocr_network:
     driver: bridge
-    ipam:
-      driver: default
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
