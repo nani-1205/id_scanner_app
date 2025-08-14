@@ -15,55 +15,54 @@ from datetime import datetime
 OLLAMA_API_URL = "http://ollama:11434/api/generate"
 FACE_CASCADE = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
 AI_MODEL = "minicpm-v:8b"
-OCR_CONFIDENCE_THRESHOLD = 0.80
+OCR_CONFIDENCE_THRESHOLD = 0.80 # Ignore any text PaddleOCR is less than 80% sure about.
 
-# --- PaddleOCR Initialization (Hardcoded for English) ---
-# This is now initialized once when the worker starts, for better performance.
+# --- PaddleOCR Initialization ---
+# This heavy object is initialized once when the Celery worker process starts.
+# It will download its own models on the first run, which may take time.
 print("Initializing PaddleOCR for English...")
 paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en')
 print("PaddleOCR Initialized.")
 
 def preprocess_image_for_ocr(image_bytes):
-    """Applies advanced computer vision techniques to clean and enhance the image."""
+    """
+    Applies advanced computer vision techniques to clean and enhance the image
+    before sending it to the OCR engine for better accuracy.
+    """
     try:
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        # 1. Convert to Grayscale for better contrast analysis
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # 2. Increase Contrast (CLAHE: Contrast Limited Adaptive Histogram Equalization)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced_contrast = clahe.apply(gray)
+        
+        # 3. Deskew (straighten the image) to help the OCR engine
         coords = np.column_stack(np.where(enhanced_contrast > 0))
         angle = cv2.minAreaRect(coords)[-1]
-        if angle < -45: angle = -(90 + angle)
-        else: angle = -angle
+        if angle < -45:
+            angle = -(90 + angle)
+        else:
+            angle = -angle
         (h, w) = enhanced_contrast.shape[:2]
         center = (w // 2, h // 2)
         M = cv2.getRotationMatrix2D(center, angle, 1.0)
         deskewed = cv2.warpAffine(enhanced_contrast, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        
+        # 4. Convert the processed image back to bytes for PaddleOCR
         _, buffer = cv2.imencode('.png', deskewed)
         return buffer.tobytes()
     except Exception as e:
         print(f"Could not preprocess image, using original. Error: {e}")
         return image_bytes
 
-def process_file_input(file_bytes, filename):
-    """Accepts a file (image or PDF) and returns a list of standardized image bytes."""
-    images_bytes = []
-    if filename.lower().endswith('.pdf'):
-        try:
-            doc = fitz.open(stream=file_bytes, filetype="pdf")
-            for page in doc:
-                pix = page.get_pixmap(dpi=300)
-                img_bytes = pix.tobytes("jpeg")
-                images_bytes.append(normalize_image(img_bytes))
-            doc.close()
-        except Exception as e:
-            print(f"Error processing PDF file '{filename}': {e}")
-    else:
-        images_bytes.append(normalize_image(file_bytes))
-    return images_bytes
-
 def extract_text_with_paddleocr(ordered_image_bytes):
-    """Step 1: Use PaddleOCR with pre-processing and confidence filtering."""
+    """
+    Step 1: Use PaddleOCR with pre-processing and confidence filtering.
+    """
     full_text = ""
     for i, img_bytes in enumerate(ordered_image_bytes):
         separator = f"\n--- TEXT FROM PAGE/IMAGE {i+1} ---\n"
@@ -82,7 +81,10 @@ def extract_text_with_paddleocr(ordered_image_bytes):
     return full_text
 
 def structure_data_with_master_prompt(raw_text, base64_images, doc_type_hint):
-    """Step 2: Uses the ultimate "Multi-Template" prompt."""
+    """
+    Step 2: Uses the ultimate "Multi-Template" prompt to let the AI choose the
+    best structure for the document it identifies.
+    """
     prompt = f"""
     You are a world-class data extraction expert. Your task is to analyze the provided document image(s) and raw OCR text to create a single, perfectly structured JSON output. The user has indicated the document may be a '{doc_type_hint}', use this as a strong hint.
 
@@ -221,3 +223,27 @@ def detect_and_crop_face(image_bytes_list):
             print(f"Error during face detection: {e}")
             continue
     return None
+
+def process_file_input(file_bytes, filename):
+    """
+    Accepts a file (image or PDF) and returns a list of standardized image bytes.
+    If the file is a PDF, it converts each page into an image.
+    """
+    images_bytes = []
+    
+    if filename.lower().endswith('.pdf'):
+        try:
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            for page in doc:
+                # Render page to a high-resolution image
+                pix = page.get_pixmap(dpi=300)
+                img_bytes = pix.tobytes("jpeg")
+                images_bytes.append(normalize_image(img_bytes))
+            doc.close()
+        except Exception as e:
+            print(f"Error processing PDF file '{filename}': {e}")
+    else:
+        # Process as a single image
+        images_bytes.append(normalize_image(file_bytes))
+        
+    return images_bytes
