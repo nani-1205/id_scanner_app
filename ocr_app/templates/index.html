@@ -3,7 +3,7 @@
 {% block content %}
 <div class="card">
     <h2>Scan a New Document</h2>
-    <p>Upload front and back images. They will be combined into a single document for processing.</p>
+    <p>Select the document type and upload one or more files (images or PDF).</p>
     <form method="POST" enctype="multipart/form-data">
         <div class="form-group">
             <label for="doc_type">Document Type:</label>
@@ -17,22 +17,11 @@
                 <option value="Other">Other Document</option>
             </select>
         </div>
-
-        <!-- NEW: Language Hint Input Field -->
+        
+        <!-- Simplified universal file input -->
         <div class="form-group">
-            <label for="doc_lang">Document Languages (optional, comma-separated):</label>
-            <input type="text" name="doc_lang" id="doc_lang" placeholder="e.g., en, hi, te, ar">
-            <small>Provide language codes for best results on multilingual documents (en=English, hi=Hindi, te=Telugu, ar=Arabic, etc.). Defaults to English if left blank.</small>
-        </div>
-
-        <!-- Explicit Front and Back Image Inputs -->
-        <div class="form-group">
-            <label for="front_image">Front Image:</label>
-            <input type="file" name="front_image" id="front_image" required accept="image/*">
-        </div>
-        <div class="form-group">
-            <label for="back_image">Back Image (Optional):</label>
-            <input type="file" name="back_image" id="back_image" accept="image/*">
+            <label for="document_files">Upload File(s) (Image or PDF):</label>
+            <input type="file" name="document_files" id="document_files" multiple required accept="image/*,.pdf">
         </div>
         
         <div class="form-group">

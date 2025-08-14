@@ -8,8 +8,9 @@ from database import init_db, save_processed_document, get_processed_document, g
 from processor import process_documents_task
 from flask_swagger_ui import get_swaggerui_blueprint
 from math import ceil
-from PIL import Image
-import io
+# Pillow and io are no longer needed here as conversion is handled by the worker
+# from PIL import Image
+# import io
 
 load_dotenv()
 
@@ -64,36 +65,19 @@ def setup():
 def index():
     if request.method == 'POST':
         doc_type = request.form.get('doc_type')
-        # Get the new language hint, defaulting to 'en' if empty
-        doc_lang = request.form.get('doc_lang') or 'en'
-        front_file = request.files.get('front_image')
-        back_file = request.files.get('back_image')
-
-        if not doc_type or not front_file:
-            flash('Please select a document type and upload at least a front image.')
-            return redirect(request.url)
-
-        # Convert uploaded images to a single PDF in memory
-        pdf_buffer = io.BytesIO()
-        try:
-            front_img_pil = Image.open(io.BytesIO(front_file.read())).convert("RGB")
-            
-            if back_file:
-                back_img_pil = Image.open(io.BytesIO(back_file.read())).convert("RGB")
-                front_img_pil.save(pdf_buffer, format='PDF', save_all=True, append_images=[back_img_pil])
-            else:
-                front_img_pil.save(pdf_buffer, format='PDF')
-                
-        except Exception as e:
-            flash(f'Error converting image(s) to PDF: {e}', 'error')
+        # Use getlist for the universal multi-file input
+        files = request.files.getlist('document_files')
+        
+        if not doc_type or not files or all(f.filename == '' for f in files):
+            flash('Please select a document type and upload at least one file (image or PDF).')
             return redirect(request.url)
         
-        pdf_bytes = pdf_buffer.getvalue()
+        # Pass the files directly to the worker without pre-conversion
+        # The worker's process_file_input will handle images and PDFs
+        file_contents_dict = {f"file_{i}": (f.filename, f.read()) for i, f in enumerate(files)}
 
-        file_contents_dict = {'document': ('combined_document.pdf', pdf_bytes)}
-
-        # Pass the language hint to the Celery worker
-        task = process_documents_task.delay(file_contents_dict, doc_type, doc_lang)
+        # The doc_lang parameter is no longer passed
+        task = process_documents_task.delay(file_contents_dict, doc_type)
         return redirect(url_for('processing_page', task_id=task.id))
 
     return render_template('index.html')
@@ -106,33 +90,15 @@ def api_extract():
         
     files = request.files.getlist('files')
     doc_type = request.form.get('doc_type', 'Unknown')
-    doc_lang = request.form.get('doc_lang', 'en') # Also accept lang hint in API
     
     if not files or all(f.filename == '' for f in files):
         return jsonify({"error": "No selected files"}), 400
         
-    pdf_buffer = io.BytesIO()
-    try:
-        first_image_pil = None
-        appended_images_pil = []
-        for i, file_storage in enumerate(files):
-            img_pil = Image.open(io.BytesIO(file_storage.read())).convert("RGB")
-            if i == 0:
-                first_image_pil = img_pil
-            else:
-                appended_images_pil.append(img_pil)
-        
-        if first_image_pil:
-            first_image_pil.save(pdf_buffer, format='PDF', save_all=True, append_images=appended_images_pil)
-        else:
-            return jsonify({"error": "No valid images to process."}), 400
-    except Exception as e:
-        return jsonify({"error": f"Error converting image(s) to PDF: {e}"}), 400
-    
-    pdf_bytes = pdf_buffer.getvalue()
-    file_contents_dict = {'document': ('combined_document.pdf', pdf_bytes)}
+    # Pass files directly to the worker, no PDF conversion needed here
+    file_contents_dict = {f"file_{i}": (f.filename, f.read()) for i, f in enumerate(files)}
 
-    task = process_documents_task.delay(file_contents_dict, doc_type, doc_lang)
+    # The doc_lang parameter is no longer passed
+    task = process_documents_task.delay(file_contents_dict, doc_type)
     
     return jsonify({
         "message": "Processing started.",
