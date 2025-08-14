@@ -1,8 +1,5 @@
-# Note: The 'version' attribute is obsolete and has been removed.
-
 services:
   nginx:
-    # Builds from the ./nginx directory
     build: ./nginx
     container_name: ocr_nginx
     ports:
@@ -13,9 +10,7 @@ services:
     networks:
       - ocr_network
 
-  # YAML anchor for the Flask application's base configuration
   app-1: &app_base
-    # Builds from the ./ocr_app directory
     build: ./ocr_app
     restart: always
     expose:
@@ -35,12 +30,9 @@ services:
       - ocr_network
 
   app-2:
-    # Inherits all properties from app_base, including the correct build context
     <<: *app_base
 
-  # YAML anchor for the Celery worker's base configuration
   celery_worker-1: &celery_base
-    # Builds from the ./ocr_app directory
     build: ./ocr_app
     restart: always
     command: ["celery", "-A", "app.celery", "worker", "--loglevel=info"]
@@ -56,7 +48,6 @@ services:
       - ocr_network
 
   celery_worker-2:
-    # Inherits all properties from celery_base, including the correct build context
     <<: *celery_base
 
   redis:
@@ -75,14 +66,15 @@ services:
     networks:
       - ocr_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTG-RES_DB}"]
+      # <<< THE FIX IS HERE >>>
+      # The variable was mistyped as POSTG-RES_DB.
+      # It is now corrected to POSTGRES_DB.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   ollama:
-    # <<< THE CRITICAL FIX IS HERE >>>
-    # This service MUST build from the ./ollama directory.
     build: ./ollama
     container_name: ocr_ollama
     ports:
