@@ -11,25 +11,31 @@ from math import ceil
 from PIL import Image
 import io
 
+# Load environment variables from the .env file in the root directory
 load_dotenv()
 
 def make_celery(app):
+    """
+    Configures a Celery instance to work within the Flask application context.
+    This allows Celery tasks to access Flask extensions and configuration.
+    """
     class FlaskTask(Task):
         def __call__(self, *args, **kwargs):
             with app.app_context():
                 return self.run(*args, **kwargs)
+
     celery_app = Celery(app.import_name, task_cls=FlaskTask)
     celery_app.config_from_object(app.config["CELERY"])
     celery_app.set_default()
     return celery_app
 
+# --- Flask App Initialization ---
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
+app.secret_key = os.urandom(24) # Required for flashing messages
 
+# --- Celery Configuration ---
 app.config.update(
     CELERY=dict(
-        # <<< THE CRITICAL FIX IS HERE >>>
-        # Reverted from 'localhost' to the service name 'redis' to work with the bridge network.
         broker_url="redis://redis:6379/0",
         result_backend="redis://redis:6379/0",
         task_ignore_result=False,
@@ -37,33 +43,41 @@ app.config.update(
 )
 celery = make_celery(app)
 
+# --- Swagger UI API Documentation Configuration ---
 SWAGGER_URL = '/api/docs'
-API_URL = '/api/spec' 
+API_URL = '/api/spec' # This points to our Flask route that serves dynamic JSON
 swaggerui_blueprint = get_swaggerui_blueprint(
     SWAGGER_URL,
     API_URL,
-    config={'app_name': "OCR AI API"}
+    config={'app_name': "Offline Document OCR API"}
 )
 app.register_blueprint(swaggerui_blueprint)
 
+# --- Route to dynamically serve the API specification (swagger.json) ---
 @app.route('/api/spec')
 def api_spec():
+    """Dynamically serves the swagger.json file, injecting the correct host/scheme."""
     with open(os.path.join(app.static_folder, 'swagger.json')) as f:
         swagger_spec = json.load(f)
+    
     swagger_spec['host'] = request.host
     swagger_spec['schemes'] = [request.scheme]
     swagger_spec['basePath'] = "/"
+    
     return jsonify(swagger_spec)
 
-
+# --- Flask Hooks ---
 @app.before_request
 def setup():
+    """Initializes the database table before the first request."""
     if not hasattr(app, 'db_initialized'):
         init_db()
         app.db_initialized = True
 
+# --- Main Application Routes ---
 @app.route('/', methods=['GET', 'POST'])
 def index():
+    """Handles the main UI page for document uploads."""
     if request.method == 'POST':
         doc_type = request.form.get('doc_type')
         files = request.files.getlist('document_files')
@@ -72,6 +86,7 @@ def index():
             flash('Please select a document type and upload at least one file (image or PDF).')
             return redirect(request.url)
         
+        # The worker's `process_file_input` will handle images and PDFs
         file_contents_dict = {f"file_{i}": (f.filename, f.read()) for i, f in enumerate(files)}
 
         task = process_documents_task.delay(file_contents_dict, doc_type)
@@ -79,8 +94,10 @@ def index():
 
     return render_template('index.html')
 
+# --- API Endpoint ---
 @app.route('/api/v1/extract', methods=['POST'])
 def api_extract():
+    """API endpoint for programmatic document submission."""
     if 'files' not in request.files:
         return jsonify({"error": "No 'files' part in the request"}), 400
         
@@ -100,24 +117,30 @@ def api_extract():
         "status_url": url_for('task_status', task_id=task.id, _external=True)
     }), 202
 
+# --- History Page ---
 @app.route('/history')
 def history():
+    """Displays a paginated list of previously processed documents."""
     page = request.args.get('page', 1, type=int)
     per_page = 10
     history_items, total_count = get_history(page, per_page)
     last_page = ceil(total_count / per_page) if total_count > 0 else 1
+    
     return render_template('history.html', 
                            history=history_items, 
                            page=page, 
                            per_page=per_page,
                            last_page=last_page)
 
+# --- Task Status & Results Pages ---
 @app.route('/processing/<task_id>')
 def processing_page(task_id):
+    """Displays the 'processing' loading page."""
     return render_template('processing.html', task_id=task_id)
 
 @app.route('/status/<task_id>')
 def task_status(task_id):
+    """API endpoint to check the status of a Celery task."""
     task = process_documents_task.AsyncResult(task_id)
     if task.state == 'PENDING':
         response = {'state': task.state, 'status': 'Pending...'}
@@ -131,6 +154,7 @@ def task_status(task_id):
 
 @app.route('/results/<int:doc_id>')
 def results(doc_id):
+    """Displays the extracted data for a specific document ID."""
     document = get_processed_document(doc_id)
     if not document:
         flash('Document not found!', 'error')
@@ -139,92 +163,9 @@ def results(doc_id):
     face_image_b64 = None
     if document['face_image']:
         face_image_b64 = base64.b64encode(document['face_image']).decode('utf-8')
-    return render_template('results.html', document=document, extracted_data=extracted_data, face_image_b64=face_image_b64)```
+    return render_template('results.html', document=document, extracted_data=extracted_data, face_image_b64=face_image_b64)
 
----
-
-### **3. `ocr_app/database.py` (Full Updated Code)**
-
-This version reverts the database `host` to use the service name `db`, which is correct for our new network configuration.
-
-```python
-import os
-import psycopg2
-from psycopg2.extras import DictCursor
-
-def get_db_connection():
-    """Establishes a connection to the PostgreSQL database."""
-    conn = psycopg2.connect(
-        # <<< THE CRITICAL FIX IS HERE >>>
-        # Reverted from 'localhost' to the service name 'db' to work with the bridge network.
-        host='db',
-        dbname=os.environ['POSTGRES_DB'],
-        user=os.environ['POSTGRES_USER'],
-        password=os.environ['POSTGRES_PASSWORD']
-    )
-    return conn
-
-def init_db():
-    """Initializes the database table if it doesn't exist."""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS documents (
-            id SERIAL PRIMARY KEY,
-            doc_type VARCHAR(50) NOT NULL,
-            extracted_data JSONB,
-            original_images BYTEA[],
-            face_image BYTEA,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
-
-def save_processed_document(doc_type, extracted_data, original_images, face_image):
-    """Saves a processed document to the database."""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO documents (doc_type, extracted_data, original_images, face_image)
-        VALUES (%s, %s, %s, %s) RETURNING id;
-        """,
-        (doc_type, extracted_data, original_images, face_image)
-    )
-    new_id = cur.fetchone()[0]
-    conn.commit()
-    cur.close()
-    conn.close()
-    return new_id
-
-def get_processed_document(doc_id):
-    """Retrieves a processed document from the database by its ID."""
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute("SELECT * FROM documents WHERE id = %s;", (doc_id,))
-    document = cur.fetchone()
-    cur.close()
-    conn.close()
-    return document
-
-def get_history(page=1, per_page=10):
-    """Retrieves a paginated list of processed documents for the history page."""
-    offset = (page - 1) * per_page
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=DictCursor)
-    
-    cur.execute("SELECT COUNT(*) FROM documents;")
-    total_count = cur.fetchone()[0]
-    
-    cur.execute(
-        "SELECT id, doc_type, created_at FROM documents ORDER BY created_at DESC LIMIT %s OFFSET %s;",
-        (per_page, offset)
-    )
-    history = cur.fetchall()
-    
-    cur.close()
-    conn.close()
-    
-    return history, total_count
+# This block allows running the app with 'python app.py' for local debugging,
+# but it is not used by Gunicorn in the Docker container.
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
