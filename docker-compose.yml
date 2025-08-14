@@ -17,6 +17,10 @@ services:
       - "5000"
     env_file:
       - .env
+    # <<< THE FIX IS HERE (Part 1) >>>
+    # Explicitly provide a reliable DNS server for this service.
+    dns:
+      - 8.8.8.8
     depends_on:
       redis:
         condition: service_started
@@ -38,6 +42,10 @@ services:
     command: ["celery", "-A", "app.celery", "worker", "--loglevel=info"]
     env_file:
       - .env
+    # <<< THE FIX IS HERE (Part 2) >>>
+    # Also provide the DNS server for the Celery workers.
+    dns:
+      - 8.8.8.8
     depends_on:
       - app-1
       - app-2
@@ -66,9 +74,6 @@ services:
     networks:
       - ocr_network
     healthcheck:
-      # <<< THE FIX IS HERE >>>
-      # The variable was mistyped as POSTG-RES_DB.
-      # It is now corrected to POSTGRES_DB.
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
