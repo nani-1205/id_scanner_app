@@ -8,9 +8,8 @@ from database import init_db, save_processed_document, get_processed_document, g
 from processor import process_documents_task
 from flask_swagger_ui import get_swaggerui_blueprint
 from math import ceil
-# Pillow and io are no longer needed here as conversion is handled by the worker
-# from PIL import Image
-# import io
+from PIL import Image
+import io
 
 load_dotenv()
 
@@ -29,6 +28,8 @@ app.secret_key = os.urandom(24)
 
 app.config.update(
     CELERY=dict(
+        # <<< THE CRITICAL FIX IS HERE >>>
+        # Reverted from 'localhost' to the service name 'redis' to work with the bridge network.
         broker_url="redis://redis:6379/0",
         result_backend="redis://redis:6379/0",
         task_ignore_result=False,
@@ -65,23 +66,18 @@ def setup():
 def index():
     if request.method == 'POST':
         doc_type = request.form.get('doc_type')
-        # Use getlist for the universal multi-file input
         files = request.files.getlist('document_files')
         
         if not doc_type or not files or all(f.filename == '' for f in files):
             flash('Please select a document type and upload at least one file (image or PDF).')
             return redirect(request.url)
         
-        # Pass the files directly to the worker without pre-conversion
-        # The worker's process_file_input will handle images and PDFs
         file_contents_dict = {f"file_{i}": (f.filename, f.read()) for i, f in enumerate(files)}
 
-        # The doc_lang parameter is no longer passed
         task = process_documents_task.delay(file_contents_dict, doc_type)
         return redirect(url_for('processing_page', task_id=task.id))
 
     return render_template('index.html')
-
 
 @app.route('/api/v1/extract', methods=['POST'])
 def api_extract():
@@ -94,10 +90,8 @@ def api_extract():
     if not files or all(f.filename == '' for f in files):
         return jsonify({"error": "No selected files"}), 400
         
-    # Pass files directly to the worker, no PDF conversion needed here
     file_contents_dict = {f"file_{i}": (f.filename, f.read()) for i, f in enumerate(files)}
 
-    # The doc_lang parameter is no longer passed
     task = process_documents_task.delay(file_contents_dict, doc_type)
     
     return jsonify({
@@ -145,4 +139,92 @@ def results(doc_id):
     face_image_b64 = None
     if document['face_image']:
         face_image_b64 = base64.b64encode(document['face_image']).decode('utf-8')
-    return render_template('results.html', document=document, extracted_data=extracted_data, face_image_b64=face_image_b64)
+    return render_template('results.html', document=document, extracted_data=extracted_data, face_image_b64=face_image_b64)```
+
+---
+
+### **3. `ocr_app/database.py` (Full Updated Code)**
+
+This version reverts the database `host` to use the service name `db`, which is correct for our new network configuration.
+
+```python
+import os
+import psycopg2
+from psycopg2.extras import DictCursor
+
+def get_db_connection():
+    """Establishes a connection to the PostgreSQL database."""
+    conn = psycopg2.connect(
+        # <<< THE CRITICAL FIX IS HERE >>>
+        # Reverted from 'localhost' to the service name 'db' to work with the bridge network.
+        host='db',
+        dbname=os.environ['POSTGRES_DB'],
+        user=os.environ['POSTGRES_USER'],
+        password=os.environ['POSTGRES_PASSWORD']
+    )
+    return conn
+
+def init_db():
+    """Initializes the database table if it doesn't exist."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id SERIAL PRIMARY KEY,
+            doc_type VARCHAR(50) NOT NULL,
+            extracted_data JSONB,
+            original_images BYTEA[],
+            face_image BYTEA,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def save_processed_document(doc_type, extracted_data, original_images, face_image):
+    """Saves a processed document to the database."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO documents (doc_type, extracted_data, original_images, face_image)
+        VALUES (%s, %s, %s, %s) RETURNING id;
+        """,
+        (doc_type, extracted_data, original_images, face_image)
+    )
+    new_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return new_id
+
+def get_processed_document(doc_id):
+    """Retrieves a processed document from the database by its ID."""
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    cur.execute("SELECT * FROM documents WHERE id = %s;", (doc_id,))
+    document = cur.fetchone()
+    cur.close()
+    conn.close()
+    return document
+
+def get_history(page=1, per_page=10):
+    """Retrieves a paginated list of processed documents for the history page."""
+    offset = (page - 1) * per_page
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    
+    cur.execute("SELECT COUNT(*) FROM documents;")
+    total_count = cur.fetchone()[0]
+    
+    cur.execute(
+        "SELECT id, doc_type, created_at FROM documents ORDER BY created_at DESC LIMIT %s OFFSET %s;",
+        (per_page, offset)
+    )
+    history = cur.fetchall()
+    
+    cur.close()
+    conn.close()
+    
+    return history, total_count

@@ -8,25 +8,23 @@ services:
       - app-1
       - app-2
     networks:
-      - ocr_network
+      - ocr_bridge_network
 
   app-1: &app_base
     build: ./ocr_app
     restart: always
-    # <<< THE FIX IS HERE (Part 1) >>>
-    # Use the host's network directly. This bypasses Docker's internal networking.
-    network_mode: "host"
+    expose:
+      - "5000"
     env_file:
       - .env
-    # We no longer need depends_on for network services, as we are on the host network.
     depends_on:
-      db:
-        condition: service_healthy
-      ollama:
-        condition: service_started
+      - redis
+      - db
+      - ollama
     volumes:
       - ./ocr_app:/app
-    # Note: 'networks' is not used with network_mode: host
+    networks:
+      - ocr_bridge_network
 
   app-2:
     <<: *app_base
@@ -37,28 +35,23 @@ services:
     command: ["celery", "-A", "app.celery", "worker", "--loglevel=info"]
     env_file:
       - .env
-    # <<< THE FIX IS HERE (Part 2) >>>
-    network_mode: "host"
     depends_on:
       - app-1
       - app-2
+      - redis
     volumes:
       - ./ocr_app:/app
+    networks:
+      - ocr_bridge_network
 
   celery_worker-2:
     <<: *celery_base
-
-  # --- Services on the Bridge Network ---
-  # These services can still communicate with each other on the bridge network.
-  # Our Python apps can reach them via 'localhost' because they share the host network.
 
   redis:
     image: "redis:alpine"
     container_name: ocr_redis
     networks:
-      - ocr_network
-    ports: # Expose the port to the host so our Python apps can find it
-      - "6379:6379"
+      - ocr_bridge_network
 
   db:
     image: postgres:15-alpine
@@ -68,9 +61,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - ocr_network
-    ports: # Expose the port to the host
-      - "5432:5432"
+      - ocr_bridge_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -85,13 +76,18 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     networks:
-      - ocr_network
+      - ocr_bridge_network
 
 volumes:
   postgres_data:
   ollama_data:
 
-# The bridge network is still needed for the backend services to communicate.
+# Defines our custom network with a reliable DNS server.
 networks:
-  ocr_network:
+  ocr_bridge_network:
     driver: bridge
+    ipam:
+      driver: default
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4

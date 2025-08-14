@@ -7,12 +7,11 @@ def get_db_connection():
     Establishes a connection to the PostgreSQL database.
     """
     conn = psycopg2.connect(
-        # <<< THE CRITICAL FIX IS HERE >>>
-        # When using 'network_mode: "host"', the application containers run on the host's
-        # network. They must connect to other services via 'localhost' and the exposed port,
-        # not the Docker service name.
-        host='localhost',
-        port='5432', # It's good practice to be explicit
+        # <<< THIS IS THE CORRECT CONFIGURATION >>>
+        # Using the Docker service name 'db' as the host allows containers on the same
+        # custom bridge network to resolve and connect to each other.
+        host='db',
+        port='5432', # It's good practice to be explicit with the default port
         dbname=os.environ['POSTGRES_DB'],
         user=os.environ['POSTGRES_USER'],
         password=os.environ['POSTGRES_PASSWORD']
@@ -23,6 +22,9 @@ def init_db():
     """Initializes the database table if it doesn't exist."""
     conn = get_db_connection()
     cur = conn.cursor()
+    # This SQL creates the 'documents' table with columns for all our data.
+    # JSONB is a highly efficient format for storing the extracted JSON data.
+    # BYTEA[] allows storing an array of binary data (our original images).
     cur.execute("""
         CREATE TABLE IF NOT EXISTS documents (
             id SERIAL PRIMARY KEY,
@@ -48,6 +50,7 @@ def save_processed_document(doc_type, extracted_data, original_images, face_imag
         """,
         (doc_type, extracted_data, original_images, face_image)
     )
+    # Get the ID of the newly created row to return to the application
     new_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
@@ -55,8 +58,9 @@ def save_processed_document(doc_type, extracted_data, original_images, face_imag
     return new_id
 
 def get_processed_document(doc_id):
-    """Retrieves a processed document from the database by its ID."""
+    """Retrieves a single processed document from the database by its ID."""
     conn = get_db_connection()
+    # DictCursor allows us to access columns by name (e.g., document['extracted_data'])
     cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("SELECT * FROM documents WHERE id = %s;", (doc_id,))
     document = cur.fetchone()
