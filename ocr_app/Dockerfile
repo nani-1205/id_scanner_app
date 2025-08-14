@@ -1,25 +1,20 @@
-FROM python:3.10-slim
+# We explicitly specify the :latest tag to bypass any old caches.
+FROM ollama/ollama:latest
 
-# Install system dependencies, now including the missing libglib2.0-0
-# I have also alphabetized the list for better maintenance.
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libfontconfig1 \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    libice6 \
-    libsm6 \
-    libxrender1 \
-    tesseract-ocr \
-    && rm -rf /var/lib/apt/lists/*
+# We only need curl for the health check in the entrypoint script.
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+# Set the working directory in the container (optional, but good practice)
+WORKDIR /
 
-COPY requirements.txt .
+# <<< THE FIX IS HERE >>>
+# Removed unnecessary lines:
+# - COPY requirements.txt .
+# - RUN pip install --no-cache-dir -r requirements.txt
+# - Anything else related to Python packages as this is NOT a Python app.
 
-# This pip install will take significantly longer due to PaddlePaddle's size.
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy ONLY the entrypoint script.
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-COPY . .
-
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
+ENTRYPOINT ["/entrypoint.sh"]
