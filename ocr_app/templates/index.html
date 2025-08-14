@@ -3,8 +3,8 @@
 {% block content %}
 <div class="card">
     <h2>Scan a New Document</h2>
-    <p>Upload one or more files (images or PDF). For multilingual documents, provide language codes for best results.</p>
-    <form method="POST" enctype="multipart/form-data">
+    <p>Upload files directly or use your device's camera. All images will be processed together.</p>
+    <form method="POST" enctype="multipart/form-data" id="upload-form">
         <div class="form-group">
             <label for="doc_type">Document Type:</label>
             <select name="doc_type" id="doc_type" required>
@@ -17,21 +17,166 @@
                 <option value="Other">Other Document</option>
             </select>
         </div>
-
-        <div class="form-group">
-            <label for="doc_lang">Document Languages (optional, comma-separated):</label>
-            <input type="text" name="doc_lang" id="doc_lang" placeholder="e.g., en, hi, te, ar">
-            <small>Default is English. For an Indian Passport or Aadhaar card, try 'en,hi' or 'en,te'.</small>
-        </div>
         
         <div class="form-group">
             <label for="document_files">Upload File(s) (Image or PDF):</label>
-            <input type="file" name="document_files" id="document_files" multiple required accept="image/*,.pdf">
+            <div class="file-input-wrapper">
+                <input type="file" name="document_files" id="document_files" multiple accept="image/*,.pdf">
+                <!-- NEW: Camera Capture Button -->
+                <button type="button" class="btn btn-secondary" id="open-camera-btn">Capture with Camera</button>
+            </div>
         </div>
+
+        <!-- NEW: Preview area for uploaded and captured images -->
+        <div id="preview-container" class="preview-container"></div>
         
         <div class="form-group">
             <button type="submit" class="btn">Extract Data</button>
         </div>
     </form>
 </div>
+
+<!-- NEW: Camera Modal -->
+<div id="camera-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+        <h3>Camera Capture</h3>
+        <video id="camera-feed" playsinline autoplay></video>
+        <canvas id="camera-canvas" style="display: none;"></canvas>
+        <div class="modal-actions">
+            <button type="button" class="btn" id="take-picture-btn">Take Picture</button>
+            <button type="button" class="btn btn-secondary" id="close-camera-btn">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- NEW: JavaScript for camera and file handling -->
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const uploadForm = document.getElementById('upload-form');
+    const fileInput = document.getElementById('document_files');
+    const previewContainer = document.getElementById('preview-container');
+
+    const openCameraBtn = document.getElementById('open-camera-btn');
+    const cameraModal = document.getElementById('camera-modal');
+    const closeCameraBtn = document.getElementById('close-camera-btn');
+    const takePictureBtn = document.getElementById('take-picture-btn');
+    const video = document.getElementById('camera-feed');
+    const canvas = document.getElementById('camera-canvas');
+    let stream = null;
+
+    // A robust way to manage the list of files for submission
+    const dataTransfer = new DataTransfer();
+
+    const updateFileInput = () => {
+        fileInput.files = dataTransfer.files;
+        renderPreviews();
+    };
+
+    const addFilesToDataTransfer = (files) => {
+        for (const file of files) {
+            dataTransfer.items.add(file);
+        }
+        updateFileInput();
+    };
+
+    const removeFileFromDataTransfer = (index) => {
+        dataTransfer.items.remove(index);
+        updateFileInput();
+    };
+
+    const renderPreviews = () => {
+        previewContainer.innerHTML = '';
+        if (dataTransfer.files.length > 0) {
+            previewContainer.style.display = 'grid';
+        } else {
+            previewContainer.style.display = 'none';
+        }
+
+        Array.from(dataTransfer.files).forEach((file, index) => {
+            const previewWrapper = document.createElement('div');
+            previewWrapper.className = 'preview-item';
+
+            const fileName = document.createElement('p');
+            fileName.textContent = file.name;
+
+            if (file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = document.createElement('img');
+                    img.src = e.target.result;
+                    previewWrapper.prepend(img);
+                };
+                reader.readAsDataURL(file);
+            } else {
+                // For PDFs or other files
+                const fileIcon = document.createElement('div');
+                fileIcon.className = 'file-icon';
+                fileIcon.textContent = 'PDF';
+                previewWrapper.prepend(fileIcon);
+            }
+
+            const removeBtn = document.createElement('button');
+            removeBtn.textContent = '×';
+            removeBtn.className = 'remove-btn';
+            removeBtn.onclick = () => removeFileFromDataTransfer(index);
+
+            previewWrapper.appendChild(fileName);
+            previewWrapper.appendChild(removeBtn);
+            previewContainer.appendChild(previewWrapper);
+        });
+    };
+
+    fileInput.addEventListener('change', (event) => {
+        addFilesToDataTransfer(event.target.files);
+    });
+
+    openCameraBtn.addEventListener('click', async () => {
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                video.srcObject = stream;
+                cameraModal.style.display = 'flex';
+            } catch (error) {
+                console.error("Error accessing camera: ", error);
+                alert("Could not access camera. Please ensure permissions are granted.");
+            }
+        } else {
+            alert("Camera not supported by this browser.");
+        }
+    });
+
+    const closeCamera = () => {
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+        }
+        cameraModal.style.display = 'none';
+    };
+
+    closeCameraBtn.addEventListener('click', closeCamera);
+
+    takePictureBtn.addEventListener('click', () => {
+        const context = canvas.getContext('2d');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        canvas.toBlob(blob => {
+            const fileName = `capture-${Date.now()}.jpg`;
+            const file = new File([blob], fileName, { type: 'image/jpeg', lastModified: Date.now() });
+            addFilesToDataTransfer([file]);
+            closeCamera();
+        }, 'image/jpeg', 0.95);
+    });
+
+    // Ensure the form submits the files managed by DataTransfer
+    uploadForm.addEventListener('submit', (e) => {
+        // This re-assigns the final file list right before submission
+        fileInput.files = dataTransfer.files;
+        if (fileInput.files.length === 0) {
+            alert("Please upload or capture at least one file.");
+            e.preventDefault();
+        }
+    });
+});
+</script>
 {% endblock %}
