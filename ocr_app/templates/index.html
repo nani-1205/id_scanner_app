@@ -3,7 +3,7 @@
 {% block content %}
 <div class="card">
     <h2>Scan a New Document</h2>
-    <p>Select the document type and upload one or more files (images or PDF).</p>
+    <p>Select the document type and upload the corresponding images. Front and back images will be combined into a PDF for processing.</p>
     <form method="POST" enctype="multipart/form-data">
         <div class="form-group">
             <label for="doc_type">Document Type:</label>
@@ -11,15 +11,21 @@
                 <option value="" disabled selected>-- Choose a type --</option>
                 <option value="Passport">Passport</option>
                 <option value="Driving License">Driving License</option>
+                <option value="Aadhaar Card">Aadhaar Card</option>
+                <option value="Emirates ID">Emirates ID</option>
                 <option value="Visa">Visa</option>
-                <option value="National ID Card">National ID Card</option>
                 <option value="Other">Other Document</option>
             </select>
         </div>
-        
+
+        <!-- Explicit Front and Back Image Inputs -->
         <div class="form-group">
-            <label for="document_files">Upload File(s) (Image or PDF):</label>
-            <input type="file" name="document_files" id="document_files" multiple required accept="image/*,.pdf">
+            <label for="front_image">Front Image:</label>
+            <input type="file" name="front_image" id="front_image" required accept="image/*">
+        </div>
+        <div class="form-group">
+            <label for="back_image">Back Image (Optional):</label>
+            <input type="file" name="back_image" id="back_image" accept="image/*">
         </div>
         
         <div class="form-group">
