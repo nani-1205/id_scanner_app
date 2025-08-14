@@ -3,9 +3,16 @@ import psycopg2
 from psycopg2.extras import DictCursor
 
 def get_db_connection():
-    """Establishes a connection to the PostgreSQL database."""
+    """
+    Establishes a connection to the PostgreSQL database.
+    """
     conn = psycopg2.connect(
-        host='db',
+        # <<< THE CRITICAL FIX IS HERE >>>
+        # When using 'network_mode: "host"', the application containers run on the host's
+        # network. They must connect to other services via 'localhost' and the exposed port,
+        # not the Docker service name.
+        host='localhost',
+        port='5432', # It's good practice to be explicit
         dbname=os.environ['POSTGRES_DB'],
         user=os.environ['POSTGRES_USER'],
         password=os.environ['POSTGRES_PASSWORD']

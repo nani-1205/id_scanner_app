@@ -13,25 +13,20 @@ services:
   app-1: &app_base
     build: ./ocr_app
     restart: always
-    expose:
-      - "5000"
+    # <<< THE FIX IS HERE (Part 1) >>>
+    # Use the host's network directly. This bypasses Docker's internal networking.
+    network_mode: "host"
     env_file:
       - .env
-    # <<< THE FIX IS HERE (Part 1) >>>
-    # Explicitly provide a reliable DNS server for this service.
-    dns:
-      - 8.8.8.8
+    # We no longer need depends_on for network services, as we are on the host network.
     depends_on:
-      redis:
-        condition: service_started
       db:
         condition: service_healthy
       ollama:
         condition: service_started
     volumes:
       - ./ocr_app:/app
-    networks:
-      - ocr_network
+    # Note: 'networks' is not used with network_mode: host
 
   app-2:
     <<: *app_base
@@ -43,26 +38,27 @@ services:
     env_file:
       - .env
     # <<< THE FIX IS HERE (Part 2) >>>
-    # Also provide the DNS server for the Celery workers.
-    dns:
-      - 8.8.8.8
+    network_mode: "host"
     depends_on:
       - app-1
       - app-2
-      - redis
     volumes:
       - ./ocr_app:/app
-    networks:
-      - ocr_network
 
   celery_worker-2:
     <<: *celery_base
+
+  # --- Services on the Bridge Network ---
+  # These services can still communicate with each other on the bridge network.
+  # Our Python apps can reach them via 'localhost' because they share the host network.
 
   redis:
     image: "redis:alpine"
     container_name: ocr_redis
     networks:
       - ocr_network
+    ports: # Expose the port to the host so our Python apps can find it
+      - "6379:6379"
 
   db:
     image: postgres:15-alpine
@@ -73,6 +69,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - ocr_network
+    ports: # Expose the port to the host
+      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -93,6 +91,7 @@ volumes:
   postgres_data:
   ollama_data:
 
+# The bridge network is still needed for the backend services to communicate.
 networks:
   ocr_network:
     driver: bridge
