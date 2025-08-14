@@ -3,7 +3,7 @@
 {% block content %}
 <div class="card">
     <h2>Scan a New Document</h2>
-    <p>Select the document type and upload one or more files (images or PDF).</p>
+    <p>Upload one or more files (images or PDF). For multilingual documents, provide language codes for best results.</p>
     <form method="POST" enctype="multipart/form-data">
         <div class="form-group">
             <label for="doc_type">Document Type:</label>
@@ -17,8 +17,13 @@
                 <option value="Other">Other Document</option>
             </select>
         </div>
+
+        <div class="form-group">
+            <label for="doc_lang">Document Languages (optional, comma-separated):</label>
+            <input type="text" name="doc_lang" id="doc_lang" placeholder="e.g., en, hi, te, ar">
+            <small>Default is English. For an Indian Passport or Aadhaar card, try 'en,hi' or 'en,te'.</small>
+        </div>
         
-        <!-- Simplified universal file input -->
         <div class="form-group">
             <label for="document_files">Upload File(s) (Image or PDF):</label>
             <input type="file" name="document_files" id="document_files" multiple required accept="image/*,.pdf">
